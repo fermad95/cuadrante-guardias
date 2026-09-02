@@ -1,0 +1,440 @@
+/* src/estilos.css */
+:root {
+  --fondo: #0a0d11;
+  --superficie: #12161d;
+  --superficie-alta: #1a212a;
+  --borde: #232b35;
+  --borde-sutil: #1a212a;
+  --texto: #edf0f3;
+  --tenue: #7f8b98;
+  --laborable: #63b6a6;
+  --sdf: #d6a24a;
+  --especial: #cf6f8d;
+  --acento: #8c7cf2;
+  --peligro: #d9827c;
+  --celda: #0e1319;
+
+  --serif: ui-serif, Georgia, "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", "Segoe UI Mono", Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0; padding: 1.1rem 1rem 3rem;
+  background: var(--fondo); color: var(--texto);
+  font-family: var(--sans);
+  font-size: 15px; line-height: 1.55;
+  max-width: 560px; margin-inline: auto;
+}
+
+::selection { background: color-mix(in srgb, var(--acento) 35%, transparent); color: var(--texto); }
+
+button:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 2px solid var(--acento); outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tarjeta, button, #modal .caja { transition: border-color .15s ease, background-color .15s ease, transform .1s ease; }
+}
+
+/* Cabecera / marca */
+.cabecera {
+  padding: .25rem 0 1.1rem; display: flex;
+  justify-content: space-between; align-items: flex-start; gap: .75rem;
+}
+.marca-grupo { display: flex; align-items: flex-start; gap: .65rem; }
+.logo-app {
+  width: 2.6rem; height: 2.6rem; border-radius: 50%; flex-shrink: 0;
+  margin-top: .1rem;
+}
+h1.marca {
+  margin: 0; font-family: var(--serif); font-weight: 600;
+  font-size: 1.9rem; letter-spacing: -.01em; text-wrap: balance;
+}
+.engranaje {
+  width: 2.2rem; height: 2.2rem; padding: 0; border-radius: 50%;
+  font-size: 1rem; line-height: 1; color: var(--tenue); flex-shrink: 0;
+}
+.engranaje:hover { color: var(--texto); border-color: var(--tenue); }
+.submarca {
+  margin: .15rem 0 0; color: var(--tenue); font-size: 12.5px;
+  font-family: var(--mono); letter-spacing: .02em;
+}
+
+/* Navegacion por pestanas: control segmentado */
+.pestanas {
+  display: flex; gap: 2px; margin-bottom: 1.1rem; flex-wrap: wrap;
+  background: var(--superficie); border: 1px solid var(--borde);
+  border-radius: 11px; padding: 3px;
+}
+.pestanas button {
+  flex: 1 1 auto; border: none; background: none; color: var(--tenue);
+  padding: .45rem .6rem; border-radius: 8px; font-size: 13.5px;
+  font-weight: 500; text-transform: capitalize;
+}
+.pestanas button.activo { color: var(--fondo); background: var(--acento); }
+
+/* Tarjetas */
+.tarjeta {
+  background: var(--superficie); border: 1px solid var(--borde);
+  border-radius: 16px; padding: 1.15rem;
+  margin-bottom: 1rem;
+  box-shadow: 0 1px 0 rgba(255,255,255,.02) inset, 0 8px 20px -12px rgba(0,0,0,.5);
+}
+
+.etiqueta {
+  display: block; font-family: var(--sans); font-size: 11px;
+  text-transform: uppercase; letter-spacing: .09em;
+  color: var(--tenue); font-weight: 600;
+  margin-bottom: .75rem;
+}
+
+.tenue { color: var(--tenue); }
+
+/* Cabecera de mes */
+.cabecera-mes { display: flex; justify-content: space-between; align-items: center; }
+.mes-titulo {
+  font-family: var(--serif); font-weight: 600; font-size: 1.25rem;
+  text-transform: capitalize; letter-spacing: -.005em;
+}
+.mes-anio { color: var(--tenue); font-weight: 400; }
+.nav-mes {
+  width: 2rem; height: 2rem; padding: 0; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1rem; line-height: 1; color: var(--tenue);
+}
+.nav-mes:hover { color: var(--texto); border-color: var(--tenue); }
+
+/* Calendario */
+.rejilla { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.cabecera-semana {
+  color: var(--tenue); font-size: 11px; text-align: center;
+  font-family: var(--mono); letter-spacing: .03em;
+}
+.dia {
+  aspect-ratio: 1; border: 1px solid var(--borde-sutil); border-radius: 10px;
+  background: var(--celda); padding: 4px; text-align: center; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 1px;
+}
+.dia:hover { border-color: var(--tenue); }
+.dia .num { font-size: 13px; font-variant-numeric: tabular-nums; }
+.dia .horas { font-size: 10px; color: var(--tenue); font-family: var(--mono); }
+/* La declaracion plana va antes del color-mix como reserva: un navegador sin
+   soporte descarta la segunda y conserva el color, en vez de perderlo entero. */
+.dia.laborable { border-color: var(--laborable); border-color: color-mix(in srgb, var(--laborable) 55%, var(--borde)); background: #101a1d; background: color-mix(in srgb, var(--laborable) 10%, var(--celda)); }
+.dia.sdf { border-color: var(--sdf); border-color: color-mix(in srgb, var(--sdf) 55%, var(--borde)); background: #1a1712; background: color-mix(in srgb, var(--sdf) 10%, var(--celda)); }
+.dia.especial { border-color: var(--especial); border-color: color-mix(in srgb, var(--especial) 55%, var(--borde)); background: #1a1216; background: color-mix(in srgb, var(--especial) 12%, var(--celda)); }
+.dia.laborable .num { color: var(--laborable); }
+.dia.sdf .num { color: var(--sdf); }
+.dia.especial .num { color: var(--especial); }
+/* .hoy va DESPUES de las clases de tipo: misma especificidad, gana la ultima.
+   Antes iba delante y el marcador desaparecia en los dias con guardia. */
+.dia.hoy { border-color: var(--acento); box-shadow: 0 0 0 1px var(--acento) inset; }
+.dia.hoy .num { color: var(--acento); font-weight: 600; }
+.dia.prevista { border-style: dashed; }
+.dia .lugar { font-size: 9px; color: var(--tenue); font-family: var(--mono); letter-spacing: .02em; }
+.dia .cruza { font-size: 8.5px; color: var(--tenue); text-transform: uppercase; letter-spacing: .04em; }
+
+/* Avisos */
+.aviso {
+  border-left: 2px solid var(--sdf); padding: .1rem .8rem;
+  color: var(--tenue); font-size: 12.5px; margin: .85rem 0 0; line-height: 1.5;
+}
+.aviso button {
+  font-size: 12px; padding: .15rem .55rem; margin-left: .3rem;
+  vertical-align: middle;
+}
+
+/* Tablas y cifras */
+table { width: 100%; border-collapse: collapse; }
+td { padding: .38rem 0; font-size: 14px; }
+td.cifra { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+tr:not(:last-child) td { border-bottom: 1px solid var(--borde-sutil); }
+.total { color: var(--texto); font-weight: 600; }
+.total.cifra, td.cifra.total {
+  font-size: 1.35rem; font-family: var(--serif); font-weight: 600; color: var(--acento);
+}
+tr:has(.total) td { border-bottom: none; border-top: 1px solid var(--borde); padding-top: .6rem; }
+
+.punto {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  margin-right: .45rem; vertical-align: middle;
+}
+.punto-laborable { background: var(--laborable); }
+.punto-sdf { background: var(--sdf); }
+.punto-especial { background: var(--especial); }
+
+/* Modal */
+#modal {
+  position: fixed; inset: 0; background: rgba(5,7,10,.72); display: none;
+  align-items: center; justify-content: center; padding: 1rem; z-index: 10;
+  backdrop-filter: blur(3px);
+}
+#modal.abierto { display: flex; }
+#modal .caja {
+  background: var(--superficie-alta); border: 1px solid var(--borde); border-radius: 18px;
+  padding: 1.35rem; max-width: 480px; width: 100%; max-height: 90vh; overflow-y: auto;
+  box-shadow: 0 24px 60px -20px rgba(0,0,0,.6);
+}
+.modal-fecha { display: block; font-family: var(--serif); font-size: 1.3rem; font-weight: 600; margin-bottom: .9rem; }
+.modal-fecha-grupo { display: flex; align-items: center; gap: .6rem; margin-bottom: .9rem; }
+.modal-fecha-grupo .modal-fecha { margin-bottom: 0; }
+.logo-ajustes { width: 2.1rem; height: 2.1rem; border-radius: 50%; flex-shrink: 0; }
+.cuenta-fila { display: flex; align-items: center; gap: .55rem; }
+.avatar-cuenta { width: 1.9rem; height: 1.9rem; border-radius: 50%; flex-shrink: 0; }
+.logo-bienvenida { width: 3.6rem; height: 3.6rem; border-radius: 50%; margin-bottom: .85rem; }
+.etiqueta-campo {
+  font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--tenue); margin: 1rem 0 .4rem;
+}
+/* Solo dentro del modal: en una tarjeta el primer rotulo si necesita aire
+   por encima, porque viene despues de una tabla o una lista. */
+#modal .etiqueta-campo:first-of-type { margin-top: 0; }
+.tarjeta .etiqueta-campo { margin-top: 1.4rem; }
+.chips { display: flex; flex-wrap: wrap; gap: .4rem; }
+.acciones-modal { display: flex; gap: .5rem; margin-top: 1.25rem; }
+.acciones-modal #m-guardar { margin-left: auto; }
+
+.formulario { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .85rem; }
+
+/* Controles */
+button, input, select {
+  background: var(--celda); color: var(--texto); border: 1px solid var(--borde);
+  border-radius: 9px; padding: .5rem .75rem; font: inherit; font-size: 14px;
+}
+button { cursor: pointer; }
+button.activo { border-color: var(--acento); color: var(--acento); background: #16151f; background: color-mix(in srgb, var(--acento) 14%, var(--celda)); }
+/* Neutraliza el reset de controles para las celdas del calendario, que pasaron
+   de div a button por accesibilidad. Va despues del bloque button/input/select. */
+.dia { font: inherit; color: inherit; }
+textarea {
+  width: 100%; background: var(--celda); color: var(--texto); border: 1px solid var(--borde);
+  border-radius: 9px; padding: .5rem .75rem; font-family: var(--mono); font-size: 12px;
+  resize: vertical;
+}
+button.primario { background: var(--acento); color: #0a0d11; border-color: var(--acento); font-weight: 600; }
+button.peligro { color: var(--peligro); border-color: color-mix(in srgb, var(--peligro) 45%, var(--borde)); }
+button.peligro:hover { background: color-mix(in srgb, var(--peligro) 12%, var(--celda)); }
+
+/* ---------------------------------------------------------------
+   Tema espacial. Ambientacion propia: no usa logotipos, tipografia
+   oficial ni nombres de personajes. Solo redefine los tokens y
+   anade el campo de estrellas, el crawl y el brillo de sable.
+   --------------------------------------------------------------- */
+:root[data-tema="espacial"] {
+  --fondo: #05070d;
+  --superficie: #0b1020;
+  --superficie-alta: #121a2e;
+  --borde: #24304d;
+  --borde-sutil: #161f36;
+  --texto: #e8ecf5;
+  --tenue: #8290ad;
+  --laborable: #4ea8ff;  /* sable azul */
+  --sdf: #57e389;        /* sable verde */
+  --especial: #ff5b5b;   /* sable rojo */
+  --acento: #ffd54a;     /* el amarillo del rotulo */
+  --peligro: #ff6b5e;
+  --celda: #080d1a;
+}
+
+/* Campo de estrellas: tres capas tileadas, sin imagenes ni JS. */
+:root[data-tema="espacial"] body {
+  background-color: var(--fondo);
+  background-image:
+    radial-gradient(1.4px 1.4px at 18% 22%, rgba(255,255,255,.85), transparent),
+    radial-gradient(1.1px 1.1px at 72% 14%, rgba(255,255,255,.7), transparent),
+    radial-gradient(1.6px 1.6px at 41% 68%, rgba(255,255,255,.9), transparent),
+    radial-gradient(1px 1px at 88% 54%, rgba(255,255,255,.6), transparent),
+    radial-gradient(1.2px 1.2px at 9% 81%, rgba(255,255,255,.75), transparent),
+    radial-gradient(1px 1px at 57% 93%, rgba(255,255,255,.55), transparent),
+    radial-gradient(1.3px 1.3px at 30% 45%, rgba(180,215,255,.7), transparent),
+    radial-gradient(1px 1px at 95% 88%, rgba(255,235,180,.6), transparent),
+    radial-gradient(circle at 78% 12%, rgba(78,168,255,.10), transparent 45%),
+    radial-gradient(circle at 15% 85%, rgba(255,213,74,.07), transparent 45%);
+  background-size: 340px 340px, 340px 340px, 500px 500px, 500px 500px,
+                   260px 260px, 260px 260px, 700px 700px, 700px 700px,
+                   100% 100%, 100% 100%;
+  background-attachment: fixed;
+}
+
+/* Tipografia: Anton para el rotulo (grotesca condensada muy pesada) y News
+   Cycle para todo lo demas, que desciende de News Gothic. */
+:root[data-tema="espacial"] {
+  --sans: "News Cycle", -apple-system, "Segoe UI", system-ui, Arial, sans-serif;
+  --serif: "News Cycle", -apple-system, "Segoe UI", system-ui, Arial, sans-serif;
+  --rotulo: Anton, "Arial Narrow", "Helvetica Neue Condensed", Impact, sans-serif;
+}
+:root[data-tema="espacial"] h1.marca {
+  font-family: var(--rotulo); font-weight: 400;
+  text-transform: uppercase; letter-spacing: .06em;
+  font-size: 2.1rem; line-height: 1; color: var(--acento);
+  text-shadow: 0 0 22px rgba(255,213,74,.4), 0 0 3px rgba(255,213,74,.6);
+}
+:root[data-tema="espacial"] .submarca {
+  font-family: var(--sans); letter-spacing: .22em;
+  text-transform: uppercase; font-size: 10px;
+}
+:root[data-tema="espacial"] .mes-titulo,
+:root[data-tema="espacial"] .modal-fecha {
+  font-family: var(--rotulo); font-weight: 400;
+  text-transform: uppercase; letter-spacing: .05em; font-size: 1.3rem;
+}
+:root[data-tema="espacial"] .etiqueta {
+  color: var(--acento); opacity: .9; font-weight: 700; letter-spacing: .16em;
+}
+:root[data-tema="espacial"] .pestanas button,
+:root[data-tema="espacial"] .etiqueta-campo {
+  text-transform: uppercase; letter-spacing: .1em; font-weight: 700;
+}
+:root[data-tema="espacial"] .cabecera-semana {
+  font-family: var(--sans); font-weight: 700; letter-spacing: .12em;
+}
+
+/* La cifra que importa brilla como una hoja de sable. */
+:root[data-tema="espacial"] .total.cifra,
+:root[data-tema="espacial"] td.cifra.total {
+  font-family: var(--mono); font-size: 1.25rem;
+  text-shadow: 0 0 14px currentColor;
+}
+:root[data-tema="espacial"] .tarjeta {
+  box-shadow: 0 0 0 1px rgba(78,168,255,.06) inset, 0 10px 30px -18px rgba(0,0,0,.9);
+}
+:root[data-tema="espacial"] .dia.hoy {
+  box-shadow: 0 0 0 1px var(--acento) inset, 0 0 12px -2px rgba(255,213,74,.5);
+}
+:root[data-tema="espacial"] .pestanas button.activo { color: #05070d; }
+
+/* Crawl: el texto de bienvenida en perspectiva. Solo el parrafo, para que
+   el campo de fecha y el boton sigan siendo usables. */
+.crawl p { margin: 0; }
+:root[data-tema="espacial"] .crawl {
+  perspective: 260px; margin: .5rem 0 1.25rem;
+}
+:root[data-tema="espacial"] .crawl p {
+  transform: rotateX(32deg); transform-origin: 50% 100%;
+  color: var(--acento); text-align: justify; text-align-last: center;
+  font-family: var(--sans); font-weight: 700;
+  letter-spacing: .01em; line-height: 1.35; font-size: 1.05rem;
+  text-shadow: 0 0 12px rgba(255,213,74,.3);
+}
+@media (prefers-reduced-motion: no-preference) {
+  :root[data-tema="espacial"] .crawl p {
+    animation: alejarse 1.2s ease-out both;
+  }
+}
+@keyframes alejarse {
+  from { transform: rotateX(52deg) translateY(30px); opacity: 0; }
+  to   { transform: rotateX(28deg) translateY(0); opacity: 1; }
+}
+
+/* Historial de retenciones: la deriva del tipo de IRPF a lo largo del tiempo. */
+.historial {
+  display: flex; flex-wrap: wrap; align-items: center; gap: .35rem;
+  margin: .2rem 0 .3rem;
+}
+.historial .paso {
+  font-size: 12px; color: var(--tenue); font-family: var(--mono);
+  border: 1px solid var(--borde-sutil); border-radius: 7px; padding: .2rem .45rem;
+}
+.historial .paso b { color: var(--texto); font-weight: 600; }
+.historial .paso.vigente { border-color: var(--acento); }
+.historial .paso.vigente b { color: var(--acento); }
+.historial .flecha { color: var(--tenue); font-size: 11px; }
+.historial .salto { color: var(--sdf); margin-left: .35rem; font-size: 11px; }
+.historial .paso .fijo { color: var(--tenue); font-size: 10px; margin-left: .3rem; opacity: .8; }
+
+/* ---------------------------------------------------------------
+   Secuencia de apertura. Tres tiempos encadenados: el texto lejano,
+   el rotulo alejandose y el crawl subiendo en perspectiva. Se salta
+   con un clic, con Escape o con la barra espaciadora, y se omite
+   entera si el sistema pide reduccion de movimiento.
+   --------------------------------------------------------------- */
+body.con-intro { overflow: hidden; }
+
+#intro {
+  position: fixed; inset: 0; z-index: 100; background: #000;
+  overflow: hidden; cursor: pointer;
+  font-family: var(--sans);
+}
+#intro[hidden] { display: none; }
+
+#intro-saltar {
+  position: absolute; top: 1rem; right: 1rem; z-index: 3;
+  background: transparent; border: 1px solid #2a3550; color: #7e8aa6;
+  font-size: 12px; letter-spacing: .1em; text-transform: uppercase;
+  padding: .4rem .7rem; border-radius: 8px;
+}
+#intro-saltar:hover { color: #cfd6e6; border-color: #4a5878; }
+
+/* 1. El texto lejano, en azul. */
+.intro-lejos {
+  position: absolute; top: 50%; left: 50%; margin: 0;
+  transform: translate(-50%, -50%);
+  width: min(88%, 620px); text-align: center;
+  color: #4bd5ee; font-size: clamp(1rem, 3.6vw, 1.45rem);
+  line-height: 1.5; opacity: 0;
+  animation: introLejos 5.5s ease-in-out forwards;
+}
+@keyframes introLejos {
+  0%   { opacity: 0; }
+  18%  { opacity: 1; }
+  72%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* 2. El rotulo, enorme, alejandose hasta perderse. */
+.intro-logo {
+  position: absolute; top: 50%; left: 50%; z-index: 2;
+  transform: translate(-50%, -50%) scale(7);
+  font-family: var(--rotulo, Anton, Impact, sans-serif);
+  font-weight: 400; text-transform: uppercase; letter-spacing: .04em;
+  font-size: clamp(2rem, 9vw, 4.5rem); line-height: 1;
+  color: #ffd54a; opacity: 0;
+  text-shadow: 0 0 28px rgba(255,213,74,.45);
+  animation: introLogo 5.6s cubic-bezier(.25,.1,.2,1) 5.5s forwards;
+}
+@keyframes introLogo {
+  0%   { opacity: 0; transform: translate(-50%,-50%) scale(7); }
+  10%  { opacity: 1; }
+  85%  { opacity: 1; }
+  100% { opacity: 0; transform: translate(-50%,-50%) scale(.04); }
+}
+
+/* 3. El crawl, subiendo hacia el fondo. */
+.intro-espacio {
+  position: absolute; inset: 0;
+  perspective: 380px; perspective-origin: 50% 0;
+  overflow: hidden;
+  /* Se difumina arriba para que el texto se pierda en la distancia. */
+  -webkit-mask-image: linear-gradient(to top, #000 42%, transparent 96%);
+  mask-image: linear-gradient(to top, #000 42%, transparent 96%);
+}
+.intro-crawl {
+  position: absolute; top: 100%; left: 50%;
+  width: min(84%, 560px);
+  transform-origin: 50% 0;
+  transform: translateX(-50%) rotateX(58deg);
+  color: #ffd54a; text-align: justify;
+  font-weight: 700; font-size: clamp(1rem, 3.5vw, 1.5rem); line-height: 1.5;
+  opacity: 0;
+  animation: introCrawl 27s linear 10.5s forwards;
+}
+.intro-crawl p { margin: 0 0 1.2em; }
+.intro-episodio, .intro-titulo {
+  text-align: center; letter-spacing: .05em;
+}
+.intro-titulo {
+  font-family: var(--rotulo, Anton, Impact, sans-serif);
+  font-weight: 400; text-transform: uppercase;
+  font-size: 1.5em; margin: 0 0 1.4em; line-height: 1.15;
+}
+@keyframes introCrawl {
+  0%   { opacity: 1; transform: translateX(-50%) rotateX(58deg) translateY(0); }
+  96%  { opacity: 1; }
+  100% { opacity: 0; transform: translateX(-50%) rotateX(58deg) translateY(-330%); }
+}
