@@ -8,7 +8,10 @@
 // index.html llegan siempre que haya conexion, y la cache solo actua de
 // respaldo cuando no la hay. Los iconos y el manifest van "cache primero",
 // porque no cambian casi nunca.
-const CACHE = "cuadrante-v1";
+// Nombre distinto del original ("cuadrante-v1"): mismo motivo que las claves
+// de localStorage en estado.js, aunque aqui las entradas ya se distinguen por
+// URL completa dentro del mismo objeto Cache.
+const CACHE = "cuadrante-guardias-v1";
 const RECURSOS = [
   "./",
   "./index.html",
