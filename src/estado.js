@@ -1,9 +1,15 @@
 // src/estado.js
 import { festivosDerivados } from "./festivos.js";
 
-export const CLAVE = "cuadrante_v6";
-export const CLAVE_V5 = "cuadrante_v5";
-export const CLAVE_PREVIO = "cuadrante_v6_previo";
+// Prefijo distinto del original ("cuadrante_v6"): esta copia vive en
+// fermad95.github.io/cuadrante-guardias/, que comparte origen (y por tanto
+// localStorage) con fermad95.github.io/cuadrante/. Sin un prefijo propio,
+// cualquiera que abra las dos URLs en el mismo navegador vería y podria
+// sobrescribir los datos de la otra persona, pese a que Firestore ya los
+// aisla por cuenta de Google.
+export const CLAVE = "cuadrante_guardias_v6";
+export const CLAVE_V5 = "cuadrante_guardias_v5";
+export const CLAVE_PREVIO = "cuadrante_guardias_v6_previo";
 
 export function estadoInicial() {
   return {
