@@ -154,6 +154,8 @@ h1.marca {
 table { width: 100%; border-collapse: collapse; }
 td { padding: .38rem 0; font-size: 14px; }
 td.cifra { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+/* Una cifra no se parte en dos lineas en el movil ("2535,23" / "€"). */
+td.cifra.total { white-space: nowrap; }
 tr:not(:last-child) td { border-bottom: 1px solid var(--borde-sutil); }
 .total { color: var(--texto); font-weight: 600; }
 .total.cifra, td.cifra.total {

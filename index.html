@@ -176,6 +176,8 @@ h1.marca {
 table { width: 100%; border-collapse: collapse; }
 td { padding: .38rem 0; font-size: 14px; }
 td.cifra { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+/* Una cifra no se parte en dos lineas en el movil ("2535,23" / "€"). */
+td.cifra.total { white-space: nowrap; }
 tr:not(:last-child) td { border-bottom: 1px solid var(--borde-sutil); }
 .total { color: var(--texto); font-weight: 600; }
 .total.cifra, td.cifra.total {
@@ -1200,6 +1202,7 @@ function parsearNomina(texto) {
     const horas = { laborable: 0, sdf: 0, especial: 0 };
     const importes = { laborable: 0, sdf: 0, especial: 0 };
     let prorrata = 0;
+    let horasDesconocidas = false;
     const otros = [];
     for (const d of grupos.devengos) {
       const c = clasificarDevengo(d.nombre);
@@ -1207,7 +1210,11 @@ function parsearNomina(texto) {
         importes[c.dia] = r2(importes[c.dia] + d.importe);
         const precio = precios[d.clave];
         if (precio > 0) horas[c.dia] = r2(horas[c.dia] + d.importe / precio);
-        else avisos.push(`No sé cuántas horas son los ${euros(d.importe)} de "${d.nombre}".`);
+        else {
+          horasDesconocidas = true;
+          avisos.push(`No sé cuántas horas son los ${euros(d.importe)} de "${d.nombre}": `
+            + "no podré compararla con tu calendario.");
+        }
       } else if (c.tipo === "prorrata") {
         prorrata = r2(prorrata + d.importe);
       } else if (c.tipo === "otro") {
@@ -1238,18 +1245,22 @@ function parsearNomina(texto) {
       liquidacion: { desde: `${anio}-${mes}-${diaIni}`, hasta: `${anioFin}-${mesFin}-${diaFin}` },
     };
     if (brutoGuardias > 0) {
-      desglose.horas = horas;
+      // Unas horas a medias (0 donde no se supo el precio) harian que el
+      // contraste con el calendario diera una diferencia falsa: o todas o ninguna.
+      if (!horasDesconocidas) desglose.horas = horas;
       desglose.guardias = brutoGuardias;
     }
     if (prorrata > 0) desglose.prorrataVacaciones = prorrata;
     // "Días afectados": las celdas vacías no salen en el texto, así que el
-    // número de días solo se asigna si hay uno por código o si Vacaciones es
-    // la primera fila (el único número que queda es entonces el suyo).
-    const dias = tramo(lineas, (l) => l === "Dias afectados", (l) => l === "Cotizaciones");
+    // número de días solo se asigna si hay uno por código o, si falta alguno,
+    // cuando Vacaciones es la primera fila y la nómina trae prorrata de
+    // vacaciones (así es la complementaria real: VD con días y LI vacía).
+    const dias = tramo(lineas, (l) => /^D[ií]as afectados$/i.test(l), (l) => l === "Cotizaciones");
     const codigos = dias.filter((l) => /^[A-Z]{2}$/.test(l));
     const numeros = dias.filter((l) => /^\d+$/.test(l));
     const k = codigos.indexOf("VD");
-    if (k >= 0 && (numeros.length === codigos.length || (k === 0 && numeros.length >= 1))) {
+    if (k >= 0 && (numeros.length === codigos.length
+        || (k === 0 && numeros.length === 1 && prorrata > 0))) {
       desglose.diasVacaciones = Number(numeros[k]);
     }
     if (otros.length) desglose.otros = otros;
@@ -2043,6 +2054,8 @@ function iniciar(raiz, almacen) {
     // cotizacion esta topada: en un mes con bastantes mas guardias que aquella,
     // el descuento real es proporcionalmente menor y el neto sale corto.
     const refGuardias = historialTipos(estado.nominas, "guardias").slice(-1)[0];
+    const prorrataDelMes = Number(estado.nominas.filter((n) => n.periodo === mesVisible && n.clase === "guardias")
+      .slice(-1)[0]?.desglose?.prorrataVacaciones) || 0;
     const netoCorto = !r.netoGuardiasReal && refGuardias && r.brutoGuardias > refGuardias.bruto * 1.25;
 
     return `
@@ -2071,6 +2084,8 @@ function iniciar(raiz, almacen) {
           <tr><td>Neto de las guardias${r.netoGuardiasReal ? ` <span class="tenue">(nómina real)</span>` : ""}</td><td class="cifra">${eur(r.netoGuardias)}</td></tr>
           <tr><td class="total">Total neto</td><td class="cifra total">${eur(r.neto)}</td></tr>
         </table>
+        ${r.netoGuardiasReal && prorrataDelMes > 0 ? `<p class="aviso">El neto de las guardias es el de
+          tu nómina, e incluye ${eur(prorrataDelMes)} brutos de prorrata de vacaciones.</p>` : ""}
         ${netoCorto ? `<p class="aviso">El neto de las guardias se calcula con el tipo
           de tu nómina de ${esc(refGuardias.periodo)}, que liquidaba
           ${eur(refGuardias.bruto)}. Este mes son ${eur(r.brutoGuardias)}, y como parte
@@ -2100,8 +2115,9 @@ function iniciar(raiz, almacen) {
   function vistaContraste(c) {
     const filas = ["laborable", "sdf", "especial"]
       .filter((t) => c.liquidadas[t] || c.calculadas[t])
-      .map((t) => `<tr><td><span class="punto punto-${t}"></span>Horas ${HORAS_TIPO[t]}</td>
-        <td class="cifra">${c.liquidadas[t]}h · calendario ${c.calculadas[t]}h${c.diferencias[t] && !c.calendarioVacio
+      .map((t) => `<tr><td><span class="punto punto-${t}"></span>Horas ${HORAS_TIPO[t]}
+        <span class="tenue">(calendario ${c.calculadas[t]}h)</span></td>
+        <td class="cifra">${c.liquidadas[t]}h${c.diferencias[t] && !c.calendarioVacio
           ? ` <span class="salto">${c.diferencias[t] > 0 ? "+" : ""}${c.diferencias[t]}h</span>` : ""}</td></tr>`).join("");
     const d = c.diferenciaImporte;
     const causa = c.porHorarioSAS
@@ -2382,9 +2398,13 @@ function iniciar(raiz, almacen) {
         <p><label><input type="checkbox" id="m-hecha" ${g.hecha ? "checked" : ""}> Guardia ya realizada</label></p>
         <table style="margin-top:.75rem">${tramos}
           <tr><td class="total">bruto</td><td class="cifra total">${eur(r.bruto)}</td></tr></table>
-        ${horarioLiquidado(g).horas !== g.horas || horarioLiquidado(g).inicio !== g.inicio
-          ? `<p class="aviso">Aquí se calculan las ${g.horas}h que haces. Ojo: el SAS suele liquidar
-            estas guardias de 08:00 a 08:00; compara con la nómina y reclama si te pagan menos.</p>` : ""}
+        ${(() => {
+          const sas = calcularGuardia({ ...g, fecha }, estado.festivos, { ...estado.config, horarioSAS: true });
+          const d = redondear(sas.bruto - r.bruto);
+          return d === 0 ? "" : `<p class="aviso">Aquí se calculan las ${g.horas}h que haces. Ojo: el SAS
+            suele liquidar estas guardias de 08:00 a 08:00, y con eso pagaría ${eur(Math.abs(d))}
+            ${d > 0 ? "más" : "menos"}${d < 0 ? ": compáralo con la nómina y reclama la diferencia" : ""}.</p>`;
+        })()}
         <div class="acciones-modal">
           <button class="peligro" id="m-borrar">Borrar</button>
           <button id="m-cancelar">Cancelar</button>

@@ -195,6 +195,7 @@ export function parsearNomina(texto) {
     const horas = { laborable: 0, sdf: 0, especial: 0 };
     const importes = { laborable: 0, sdf: 0, especial: 0 };
     let prorrata = 0;
+    let horasDesconocidas = false;
     const otros = [];
     for (const d of grupos.devengos) {
       const c = clasificarDevengo(d.nombre);
@@ -202,7 +203,11 @@ export function parsearNomina(texto) {
         importes[c.dia] = r2(importes[c.dia] + d.importe);
         const precio = precios[d.clave];
         if (precio > 0) horas[c.dia] = r2(horas[c.dia] + d.importe / precio);
-        else avisos.push(`No sé cuántas horas son los ${euros(d.importe)} de "${d.nombre}".`);
+        else {
+          horasDesconocidas = true;
+          avisos.push(`No sé cuántas horas son los ${euros(d.importe)} de "${d.nombre}": `
+            + "no podré compararla con tu calendario.");
+        }
       } else if (c.tipo === "prorrata") {
         prorrata = r2(prorrata + d.importe);
       } else if (c.tipo === "otro") {
@@ -233,18 +238,22 @@ export function parsearNomina(texto) {
       liquidacion: { desde: `${anio}-${mes}-${diaIni}`, hasta: `${anioFin}-${mesFin}-${diaFin}` },
     };
     if (brutoGuardias > 0) {
-      desglose.horas = horas;
+      // Unas horas a medias (0 donde no se supo el precio) harian que el
+      // contraste con el calendario diera una diferencia falsa: o todas o ninguna.
+      if (!horasDesconocidas) desglose.horas = horas;
       desglose.guardias = brutoGuardias;
     }
     if (prorrata > 0) desglose.prorrataVacaciones = prorrata;
     // "Días afectados": las celdas vacías no salen en el texto, así que el
-    // número de días solo se asigna si hay uno por código o si Vacaciones es
-    // la primera fila (el único número que queda es entonces el suyo).
-    const dias = tramo(lineas, (l) => l === "Dias afectados", (l) => l === "Cotizaciones");
+    // número de días solo se asigna si hay uno por código o, si falta alguno,
+    // cuando Vacaciones es la primera fila y la nómina trae prorrata de
+    // vacaciones (así es la complementaria real: VD con días y LI vacía).
+    const dias = tramo(lineas, (l) => /^D[ií]as afectados$/i.test(l), (l) => l === "Cotizaciones");
     const codigos = dias.filter((l) => /^[A-Z]{2}$/.test(l));
     const numeros = dias.filter((l) => /^\d+$/.test(l));
     const k = codigos.indexOf("VD");
-    if (k >= 0 && (numeros.length === codigos.length || (k === 0 && numeros.length >= 1))) {
+    if (k >= 0 && (numeros.length === codigos.length
+        || (k === 0 && numeros.length === 1 && prorrata > 0))) {
       desglose.diasVacaciones = Number(numeros[k]);
     }
     if (otros.length) desglose.otros = otros;

@@ -90,3 +90,30 @@ test("si la tabla no cuadra con los totales, se guardan solo los totales y se av
 test("un PDF sin los totales esperados falla con un mensaje claro", () => {
   assert.throws(() => parsearNomina("texto que no es una nomina"), /No se encontró/);
 });
+
+test("sin tabla de importe unitario no se inventan horas: se guarda el importe y se avisa", () => {
+  const i = COMPL_AGO.indexOf("Importe unitario");
+  const { nomina, avisos } = parsearNomina(COMPL_AGO.slice(0, i));
+  assert.equal(nomina.desglose.horas, undefined);
+  assert.equal(nomina.desglose.guardias, 1082.61);
+  assert.match(avisos.join(" "), /No sé cuántas horas/);
+});
+
+test("dias de vacaciones: el numero suelto solo se asigna a VD si hay prorrata", () => {
+  // Normal con VD vacia y LI 30: el 30 no son vacaciones.
+  const texto = NORMAL_SEP.replace("LI\n \nDías de Liquidación", "VD\n\nLI\n\nDías de Vacaciones Disfrutadas\n\nDías de Liquidación");
+  assert.equal(parsearNomina(texto).nomina.desglose.diasVacaciones, undefined);
+  // La complementaria real (VD 15, LI vacia, con prorrata) si.
+  assert.equal(parsearNomina(COMPL_AGO).nomina.desglose.diasVacaciones, 15);
+});
+
+test("acepta 'Días afectados' con tilde", () => {
+  const texto = COMPL_AGO.replace("Dias afectados", "Días afectados");
+  assert.equal(parsearNomina(texto).nomina.desglose.diasVacaciones, 15);
+});
+
+test("texto con saltos de linea de Windows (CRLF) da el mismo resultado", () => {
+  for (const t of [NORMAL_AGO, NORMAL_SEP, COMPL_JUL, COMPL_AGO]) {
+    assert.deepEqual(parsearNomina(t.replace(/\n/g, "\r\n")), parsearNomina(t));
+  }
+});

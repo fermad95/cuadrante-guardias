@@ -1,6 +1,6 @@
 // src/ui.js
 import { diasDelMes, diaSemana, redondear } from "./fechas.js";
-import { sugerenciaPara, calcularGuardia, horarioLiquidado } from "./motor.js";
+import { sugerenciaPara, calcularGuardia } from "./motor.js";
 import { resumenMes, resumenAnio, tiposEfectivos, historialTipos, ingresoDelMes, contrasteGuardias } from "./nomina.js";
 import { extraerTextoPdf, parsearNomina } from "./nomina-pdf.js";
 import { cargar, guardar, estadoInicial, importarEstado, mismaData, guardarPrevio, cargarPrevio } from "./estado.js";
@@ -237,6 +237,8 @@ export function iniciar(raiz, almacen) {
     // cotizacion esta topada: en un mes con bastantes mas guardias que aquella,
     // el descuento real es proporcionalmente menor y el neto sale corto.
     const refGuardias = historialTipos(estado.nominas, "guardias").slice(-1)[0];
+    const prorrataDelMes = Number(estado.nominas.filter((n) => n.periodo === mesVisible && n.clase === "guardias")
+      .slice(-1)[0]?.desglose?.prorrataVacaciones) || 0;
     const netoCorto = !r.netoGuardiasReal && refGuardias && r.brutoGuardias > refGuardias.bruto * 1.25;
 
     return `
@@ -265,6 +267,8 @@ export function iniciar(raiz, almacen) {
           <tr><td>Neto de las guardias${r.netoGuardiasReal ? ` <span class="tenue">(nómina real)</span>` : ""}</td><td class="cifra">${eur(r.netoGuardias)}</td></tr>
           <tr><td class="total">Total neto</td><td class="cifra total">${eur(r.neto)}</td></tr>
         </table>
+        ${r.netoGuardiasReal && prorrataDelMes > 0 ? `<p class="aviso">El neto de las guardias es el de
+          tu nómina, e incluye ${eur(prorrataDelMes)} brutos de prorrata de vacaciones.</p>` : ""}
         ${netoCorto ? `<p class="aviso">El neto de las guardias se calcula con el tipo
           de tu nómina de ${esc(refGuardias.periodo)}, que liquidaba
           ${eur(refGuardias.bruto)}. Este mes son ${eur(r.brutoGuardias)}, y como parte
@@ -294,8 +298,9 @@ export function iniciar(raiz, almacen) {
   function vistaContraste(c) {
     const filas = ["laborable", "sdf", "especial"]
       .filter((t) => c.liquidadas[t] || c.calculadas[t])
-      .map((t) => `<tr><td><span class="punto punto-${t}"></span>Horas ${HORAS_TIPO[t]}</td>
-        <td class="cifra">${c.liquidadas[t]}h · calendario ${c.calculadas[t]}h${c.diferencias[t] && !c.calendarioVacio
+      .map((t) => `<tr><td><span class="punto punto-${t}"></span>Horas ${HORAS_TIPO[t]}
+        <span class="tenue">(calendario ${c.calculadas[t]}h)</span></td>
+        <td class="cifra">${c.liquidadas[t]}h${c.diferencias[t] && !c.calendarioVacio
           ? ` <span class="salto">${c.diferencias[t] > 0 ? "+" : ""}${c.diferencias[t]}h</span>` : ""}</td></tr>`).join("");
     const d = c.diferenciaImporte;
     const causa = c.porHorarioSAS
@@ -576,9 +581,13 @@ export function iniciar(raiz, almacen) {
         <p><label><input type="checkbox" id="m-hecha" ${g.hecha ? "checked" : ""}> Guardia ya realizada</label></p>
         <table style="margin-top:.75rem">${tramos}
           <tr><td class="total">bruto</td><td class="cifra total">${eur(r.bruto)}</td></tr></table>
-        ${horarioLiquidado(g).horas !== g.horas || horarioLiquidado(g).inicio !== g.inicio
-          ? `<p class="aviso">Aquí se calculan las ${g.horas}h que haces. Ojo: el SAS suele liquidar
-            estas guardias de 08:00 a 08:00; compara con la nómina y reclama si te pagan menos.</p>` : ""}
+        ${(() => {
+          const sas = calcularGuardia({ ...g, fecha }, estado.festivos, { ...estado.config, horarioSAS: true });
+          const d = redondear(sas.bruto - r.bruto);
+          return d === 0 ? "" : `<p class="aviso">Aquí se calculan las ${g.horas}h que haces. Ojo: el SAS
+            suele liquidar estas guardias de 08:00 a 08:00, y con eso pagaría ${eur(Math.abs(d))}
+            ${d > 0 ? "más" : "menos"}${d < 0 ? ": compáralo con la nómina y reclama la diferencia" : ""}.</p>`;
+        })()}
         <div class="acciones-modal">
           <button class="peligro" id="m-borrar">Borrar</button>
           <button id="m-cancelar">Cancelar</button>
