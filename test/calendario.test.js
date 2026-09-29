@@ -99,3 +99,47 @@ test("calendarioDe no contamina el calendario base entre llamadas", () => {
   calendarioDe(2026, { "2026-12-25": { clase: "especial" } });
   assert.equal(calendarioDe(2026, {})["2026-12-25"].clase, "sdf");
 });
+
+import { localesRepetidos } from "../src/festivos.js";
+
+const CORDOBA = {
+  "2026-09-08": { nombre: "Ntra. Sra. de la Fuensanta", clase: "sdf" },
+  "2026-10-24": { nombre: "San Rafael", clase: "sdf" },
+};
+
+test("los festivos locales se repiten solos los anios siguientes, no los anteriores", () => {
+  assert.equal(clasificarDia("2027-09-08", CORDOBA), "sdf"); // miercoles
+  assert.equal(clasificarDia("2028-09-08", CORDOBA), "sdf");
+  assert.equal(clasificarDia("2025-09-08", CORDOBA), "laborable"); // antes del alta: no
+  const c = calendarioDe(2027, CORDOBA);
+  assert.equal(c["2027-09-08"].nombre, "Ntra. Sra. de la Fuensanta");
+  assert.equal(c["2027-09-08"].repetido, true);
+  assert.equal(c["2027-10-24"].ambito, "local");
+});
+
+test("quitarlo un anio (clase laborable) no afecta a los siguientes", () => {
+  const f = { ...CORDOBA, "2027-09-08": { nombre: "Ntra. Sra. de la Fuensanta", clase: "laborable" } };
+  assert.equal(clasificarDia("2027-09-08", f), "laborable");
+  assert.equal(clasificarDia("2028-09-08", f), "sdf");
+  assert.equal(calendarioDe(2027, f)["2027-09-08"].clase, "laborable");
+});
+
+test("repetir: false lo deja solo en su anio", () => {
+  const f = { "2026-06-13": { nombre: "Feria", clase: "sdf", repetir: false } };
+  assert.equal(clasificarDia("2026-06-13", f), "sdf");
+  assert.equal(clasificarDia("2027-06-14", f), "laborable");
+  assert.deepEqual(localesRepetidos(2027, f), {});
+});
+
+test("una reclasificacion de un festivo nacional no se toma por local repetido", () => {
+  const f = { "2026-12-08": { clase: "especial" } };
+  assert.deepEqual(localesRepetidos(2027, f), {});
+  assert.equal(calendarioDe(2027, f)["2027-12-08"].clase, "sdf");
+});
+
+test("si cambia de fecha un anio, manda el alta mas reciente", () => {
+  const f = { ...CORDOBA, "2028-09-08": { nombre: "Fuensanta (trasladada)", clase: "especial" } };
+  assert.equal(calendarioDe(2029, f)["2029-09-08"].nombre, "Fuensanta (trasladada)");
+  assert.equal(clasificarDia("2029-09-08", f), "especial");
+  assert.equal(clasificarDia("2027-09-08", f), "sdf");
+});

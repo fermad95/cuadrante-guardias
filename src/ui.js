@@ -391,7 +391,8 @@ export function iniciar(raiz, almacen) {
     const calendario = calendarioDe(anio, estado.festivos);
     const locales = Object.values(calendario).filter((f) => f.ambito === "local").length;
     const filas = Object.entries(calendario).sort().map(([fecha, f]) => `
-      <tr><td>${fecha} ${esc(f.nombre)}</td><td class="cifra">
+      <tr><td>${fecha} ${esc(f.nombre)}${f.repetido && f.clase !== "laborable" ? ` <span class="tenue">(se repite cada año)</span>` : ""}${
+        f.ambito === "local" && f.clase === "laborable" ? ` <span class="tenue">(este año no es festivo)</span>` : ""}</td><td class="cifra">
         <button data-festivo="${fecha}" data-clase="sdf" class="${f.clase === "sdf" ? "activo" : ""}">S-D-F</button>
         <button data-festivo="${fecha}" data-clase="especial" class="${f.clase === "especial" ? "activo" : ""}">especial</button>
       </td></tr>`).join("");
@@ -406,7 +407,10 @@ export function iniciar(raiz, almacen) {
         <input type="date" id="f-fecha">
         <input id="f-nombre" placeholder="Nombre del festivo" size="14">
         <button class="primario" id="f-anadir">Añadir</button>
-      </div></div>`;
+      </div>
+      <label><input type="checkbox" id="f-repetir" checked> Repetir cada año en la misma fecha</label>
+      <p class="aviso">Los festivos locales se repiten solos los años siguientes. Si un año
+        cambia de fecha, pulsa su botón marcado para quitarlo solo ese año.</p></div>`;
   }
 
   // Redondeo de dos decimales con coma, para prellenar inputs con el mismo
@@ -972,6 +976,7 @@ export function iniciar(raiz, almacen) {
       const nombre = raiz.querySelector("#f-nombre").value.trim();
       if (/^\d{4}-\d{2}-\d{2}$/.test(fecha) && nombre) {
         estado.festivos[fecha] = { nombre, clase: "sdf" };
+        if (!raiz.querySelector("#f-repetir").checked) estado.festivos[fecha].repetir = false;
         persistir(); pintar();
       }
     }
