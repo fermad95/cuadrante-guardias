@@ -802,6 +802,31 @@ export function iniciar(raiz, almacen) {
         <strong class="modal-fecha">Ajustes</strong>
       </div>
 
+      <details class="guia">
+        <summary>Cómo usarla</summary>
+        <ol>
+          <li><strong>Empieza</strong> poniendo tu fecha de inicio de residencia (aquí abajo). Con ella se
+            calcula tu año de residencia y tus tarifas.</li>
+          <li><strong>Festivos locales:</strong> en la pestaña Festivos añade los dos de tu municipio. Se
+            repiten solos cada año.</li>
+          <li><strong>Guardias:</strong> toca un día del calendario, elige duración y lugar, y márcala como
+            realizada cuando la hagas. Las de borde punteado son previsión.</li>
+          <li><strong>Nóminas:</strong> cada mes sube los dos PDF del SAS (Normal y Complementaria) en la
+            pestaña Nóminas, revisa la tarjeta y pulsa Añadir. La Complementaria se guarda en el mes de las
+            guardias que paga (la de septiembre, en agosto).</li>
+          <li><strong>Liquidado por el SAS:</strong> en el calendario de cada mes con nómina verás las horas
+            pagadas frente a las tuyas. Si te pagan de menos, lo tienes en «Diferencias con el SAS» para
+            reclamarlo y marcarlo como reclamado.</li>
+          <li><strong>Lo que ingresas:</strong> sale de tus nóminas reales cuando están subidas; si no, es una
+            previsión. Incluye la paga extra de junio y diciembre.</li>
+          <li><strong>Copia en la nube:</strong> inicia sesión con Google aquí abajo para no perder nada y verlo
+            en el móvil y el ordenador. Cada cuenta ve solo sus datos.</li>
+          <li><strong>Resumen del año:</strong> en la pestaña Anual puedes descargarlo para Excel.</li>
+        </ol>
+        <p class="aviso">Las tarifas son las del anexo XVI de 2026 del SAS. Si tu nómina paga otra cosa, la
+          app te avisará en la pestaña Nóminas.</p>
+      </details>
+
       <p class="etiqueta-campo">Cuenta</p>
       ${sesion ? `
         <div class="cuenta-fila">

@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test \"test/*.test.js\"",
-    "build": "node build.mjs"
+    "build": "node build.mjs",
+    "banco": "node banco/construir.mjs && npx --yes http-server banco -p 8770 -c-1 -s"
   }
 }

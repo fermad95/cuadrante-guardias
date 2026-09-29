@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Banco de pruebas</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px system-ui, sans-serif; margin: 1.5rem; background: Canvas; color: CanvasText; }
+  table { border-collapse: collapse; margin-top: 1rem; }
+  td { padding: .3rem .6rem; border-bottom: 1px solid color-mix(in srgb, CanvasText 20%, transparent); vertical-align: top; }
+  .ok { color: #2e8b57; font-weight: 700; } .fallo { color: #d0342c; font-weight: 700; }
+  #marco iframe { width: 390px; height: 700px; border: 1px solid #888; margin-top: 1rem; }
+</style>
+</head>
+<body>
+<h1>Banco de pruebas de sincronización</h1>
+<p>La app real con un Firebase simulado. Comprueba que cambiar de cuenta de Google en el mismo
+  dispositivo nunca mezcla datos ni escribe en la nube de quien no es. Tarda unos 40 segundos.</p>
+<button id="lanzar">Ejecutar los escenarios</button>
+<p id="resumen"></p>
+<table id="resultados"></table>
+<div id="marco"></div>
+<script type="module">
+const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
+const orden = (x) => Array.isArray(x) ? x.map(orden)
+  : x && typeof x === "object" ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, orden(x[k])])) : x;
+const mismos = (x, y) => !!x && !!y && ["guardias", "nominas", "festivos"]
+  .every((k) => JSON.stringify(orden(x[k])) === JSON.stringify(orden(y[k])));
+
+let E; // { clave, A, B }
+const filas = [];
+function comprobar(escenario, que, ok) {
+  filas.push({ escenario, que, ok: !!ok });
+  const tr = document.createElement("tr");
+  tr.innerHTML = `<td>${escenario}</td><td>${que}</td><td class="${ok ? "ok" : "fallo"}">${ok ? "OK" : "FALLO"}</td>`;
+  document.getElementById("resultados").appendChild(tr);
+}
+
+function preparar({ local, cuenta, fb }) {
+  localStorage.clear();
+  sessionStorage.clear();
+  if (local) localStorage.setItem(E.clave, JSON.stringify(local));
+  if (cuenta) localStorage.setItem(`${E.clave}_cuenta`, cuenta);
+  sessionStorage.setItem("__FB_init", JSON.stringify(fb));
+}
+
+async function abrir() {
+  const f = document.createElement("iframe");
+  f.src = `app.html?${Math.random()}`;
+  document.getElementById("marco").replaceChildren(f);
+  await new Promise((r) => { f.onload = r; });
+  await esperar(1500);
+  return f.contentWindow;
+}
+
+const local = () => JSON.parse(localStorage.getItem(E.clave));
+
+async function cambiarA(w, uid) {
+  w.__FB.logout();
+  await esperar(150);
+  w.__FB.login(uid, `${uid}@prueba`);
+  await esperar(1500);
+}
+
+const escenarios = {
+  async "1. Cambio de A a B y vuelta"() {
+    const n = "1. A → B → A";
+    preparar({ local: E.A, cuenta: "uidA", fb: { user: { uid: "uidA" }, docs: { uidA: E.A, uidB: E.B } } });
+    const w = await abrir();
+    comprobar(n, "arranca con los datos de A", mismos(local(), E.A));
+    await cambiarA(w, "uidB");
+    comprobar(n, "al entrar en B se ven los datos de B", mismos(local(), E.B));
+    comprobar(n, "los datos de A quedan como respaldo de A", mismos(JSON.parse(localStorage.getItem(`${E.clave}_respaldo_uidA`)), E.A));
+    await esperar(3500);
+    comprobar(n, "no se escribe nada en ninguna nube", w.__FB.escrituras.length === 0);
+    await cambiarA(w, "uidA");
+    comprobar(n, "al volver a A se ven sus datos", mismos(local(), E.A));
+    await esperar(3000);
+    comprobar(n, "las dos nubes quedan intactas", mismos(w.__FB.docs.uidA, E.A) && mismos(w.__FB.docs.uidB, E.B));
+  },
+
+  async "2. Version antigua con un cambio sin subir"() {
+    const n = "2. Guardado pendiente";
+    preparar({ local: E.A, fb: { user: { uid: "uidA" }, docs: { uidA: E.A, uidB: E.B } } }); // sin clave de cuenta
+    const w = await abrir();
+    comprobar(n, "la version nueva anota que los datos son de A", localStorage.getItem(`${E.clave}_cuenta`) === "uidA");
+    const d = w.document;
+    for (let i = 0; i < 2; i++) { d.querySelector('[data-mes="1"]').click(); await esperar(150); }
+    const dia = d.querySelector("[data-fecha]:not(.guardia)") || d.querySelector("[data-fecha]");
+    const fecha = dia.dataset.fecha;
+    dia.click(); await esperar(250);
+    d.querySelector("#m-guardar").click(); await esperar(100);
+    comprobar(n, "la guardia nueva se guarda en local", fecha in local().guardias);
+    await cambiarA(w, "uidB"); // antes de que venza el guardado (2,5 s)
+    await esperar(3000);
+    comprobar(n, "la guardia de A no llega a la nube de B", !(fecha in (w.__FB.docs.uidB.guardias || {})));
+    await cambiarA(w, "uidA");
+    await esperar(3500);
+    comprobar(n, "al volver a A, la guardia se recupera", fecha in local().guardias);
+    comprobar(n, "y se sube a la nube de A", fecha in w.__FB.docs.uidA.guardias);
+  },
+
+  async "3. Cuenta con datos de una version antigua"() {
+    const n = "3. B con datos antiguos";
+    preparar({ fb: { user: null, docs: { uidA: E.A, uidB: E.B } } });
+    const w = await abrir();
+    w.__FB.login("uidB", "uidB@prueba");
+    await esperar(1500);
+    comprobar(n, "carga los datos de B tal cual", mismos(local(), E.B));
+    await esperar(3000);
+    comprobar(n, "no escribe nada al entrar", w.__FB.escrituras.length === 0);
+  },
+
+  async "4. Cuenta nueva sin datos"() {
+    const n = "4. B vacía";
+    preparar({ local: E.A, cuenta: "uidA", fb: { user: { uid: "uidA" }, docs: { uidA: E.A } } });
+    const w = await abrir();
+    await cambiarA(w, "uidB");
+    const l = local();
+    comprobar(n, "empieza en blanco", Object.keys(l.guardias).length === 0 && l.nominas.length === 0 && l.config.inicioResidencia === null);
+    await esperar(3000);
+    comprobar(n, "no hereda nada de A en su nube", w.__FB.escrituras.length === 0);
+  },
+
+  async "5. Cambio de cuenta sin conexión"() {
+    const n = "5. Sin red";
+    preparar({ local: E.A, cuenta: "uidA", fb: { user: { uid: "uidA" }, docs: { uidA: E.A, uidB: E.B } } });
+    const w = await abrir();
+    w.__FB.falloLectura = true;
+    await cambiarA(w, "uidB");
+    comprobar(n, "avisa de que no puede cargar la cuenta", /No se han podido cargar/.test(w.document.querySelector("#vista").innerText));
+    comprobar(n, "la copia sigue siendo de A", localStorage.getItem(`${E.clave}_cuenta`) === "uidA");
+    await esperar(3500);
+    comprobar(n, "no escribe en ninguna nube", w.__FB.escrituras.length === 0);
+  },
+};
+
+document.getElementById("lanzar").onclick = async () => {
+  E = await (await fetch(`estados.json?${Date.now()}`, { cache: "no-store" })).json();
+  filas.length = 0;
+  document.getElementById("resultados").replaceChildren();
+  document.getElementById("resumen").textContent = "Ejecutando…";
+  for (const [nombre, fn] of Object.entries(escenarios)) {
+    try { await fn(); } catch (e) { comprobar(nombre, `error: ${e.message}`, false); }
+  }
+  localStorage.clear();
+  sessionStorage.clear();
+  const fallos = filas.filter((f) => !f.ok).length;
+  document.getElementById("resumen").innerHTML = fallos === 0
+    ? `<span class="ok">Todo correcto: ${filas.length} comprobaciones.</span>`
+    : `<span class="fallo">${fallos} de ${filas.length} comprobaciones fallan.</span>`;
+  window.resultadoBanco = { total: filas.length, fallos, filas };
+};
+</script>
+</body>
+</html>

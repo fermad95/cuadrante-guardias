@@ -440,3 +440,9 @@ body.con-intro { overflow: hidden; }
   96%  { opacity: 1; }
   100% { opacity: 0; transform: translateX(-50%) rotateX(58deg) translateY(-330%); }
 }
+
+/* Guia de uso plegable en Ajustes */
+.guia { margin: .9rem 0 .2rem; border: 1px solid var(--borde, rgba(127,127,127,.35)); border-radius: 10px; padding: .55rem .8rem; }
+.guia summary { cursor: pointer; font-weight: 700; }
+.guia ol { margin: .6rem 0 0; padding-left: 1.2rem; line-height: 1.5; font-size: 13.5px; }
+.guia li { margin: .35rem 0; }
