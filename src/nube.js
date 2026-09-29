@@ -106,14 +106,23 @@ async function uidActual() {
 // `import` de ui.js no evita el choque de nombres a nivel superior — hacen
 // falta nombres de verdad distintos en el propio archivo.
 export async function cargarNube() {
+  const r = await leerNube();
+  return r.ok ? r.dato : null;
+}
+
+// Como cargarNube, pero distingue "esta cuenta no tiene datos" ({ ok: true,
+// dato: null }) de "no se ha podido leer" ({ ok: false }): al cambiar de
+// cuenta no es lo mismo empezar en blanco que no saber que hay. Devuelve
+// tambien el uid leido, por si la sesion cambia mientras llega la respuesta.
+export async function leerNube() {
   const act = await uidActual();
-  if (!act) return null;
+  if (!act) return { ok: false };
   const { f, uid } = act;
   try {
     const snap = await f.fsMod.getDoc(f.fsMod.doc(f.db, "usuarios", uid));
-    return snap.exists() ? snap.data() : null;
+    return { ok: true, uid, dato: snap.exists() ? snap.data() : null };
   } catch {
-    return null;
+    return { ok: false };
   }
 }
 
@@ -124,7 +133,11 @@ export async function cargarNube() {
 // Debounced + envio inmediato al ocultar la pestana, igual que el guardado
 // en el Artifact. `alCambiarEstado(estado)` recibe "comprobando" / "al-dia" /
 // "pendiente" / "no-disponible" (no-disponible tambien cuando no hay sesion).
-export function creaGuardadoNube(alCambiarEstado) {
+// `cuentaPermitida()` (opcional) devuelve el uid de la cuenta duena de los
+// datos locales: si hay una y la sesion es otra, no se escribe nada. Evita
+// que un guardado pendiente de una cuenta acabe en la nube de otra al
+// cambiar de cuenta en el mismo dispositivo.
+export function creaGuardadoNube(alCambiarEstado, cuentaPermitida) {
   let temporizador = null;
   let ultimoEnviado = null;
   let ultimoUid = null;
@@ -167,6 +180,8 @@ export function creaGuardadoNube(alCambiarEstado) {
     const act = await uidActual();
     if (!act) { fijarEstado("no-disponible"); return; }
     const { f, uid } = act;
+    const duena = typeof cuentaPermitida === "function" ? cuentaPermitida() : null;
+    if (duena && duena !== uid) { fijarEstado("no-disponible"); return; }
     // Si ha cambiado de cuenta (cerrar sesion + entrar con otra Google
     // distinta) sin que el estado local haya cambiado, no hay que confiar
     // en el "ya esta enviado" de la cuenta anterior.

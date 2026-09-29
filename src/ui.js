@@ -5,7 +5,8 @@ import { resumenMes, resumenAnio, tiposEfectivos, historialTipos, ingresoDelMes,
 import { extraerTextoPdf, parsearNomina } from "./nomina-pdf.js";
 import { cargar, guardar, estadoInicial, importarEstado, mismaData, guardarPrevio, cargarPrevio } from "./estado.js";
 import { cargarRemoto, creaGuardadoRemoto, esMasReciente } from "./persistencia.js";
-import { alCambiarSesion, iniciarSesion, cerrarSesion, cargarNube, creaGuardadoNube } from "./nube.js";
+import { alCambiarSesion, iniciarSesion, cerrarSesion, leerNube, creaGuardadoNube } from "./nube.js";
+import { leerCuenta, fijarCuenta, guardarRespaldoCuenta, leerRespaldoCuenta, decidirCuenta } from "./cuenta.js";
 import { RETRIBUCIONES_ANEXO, retribucionesDe } from "./tarifas.js";
 import { calendarioDe } from "./festivos.js";
 import { LOGO_URI } from "./logo.js";
@@ -76,7 +77,7 @@ export function iniciar(raiz, almacen) {
   // de los dos, o ninguno, puede estar disponible segun donde se abra la app.
   const repintarAjustesSiAbierto = () => { if (ajustesAbierto) abrirAjustes(); };
   const guardarRemoto = creaGuardadoRemoto(repintarAjustesSiAbierto);
-  const guardarNube = creaGuardadoNube(repintarAjustesSiAbierto);
+  const guardarNube = creaGuardadoNube(repintarAjustesSiAbierto, () => leerCuenta(almacen));
   const persistir = () => {
     estado.actualizadoEn = Date.now();
     guardar(almacen, estado);
@@ -105,6 +106,50 @@ export function iniciar(raiz, almacen) {
       guardarPrevio(almacen, previo);
       avisarAdopcion();
     }
+  }
+
+  // Al conocer la cuenta de la sesion (al arrancar o al iniciar sesion). Si la
+  // copia local es de esa cuenta, o de ninguna, se sigue la regla de siempre
+  // (gana la mas reciente). Si es de OTRA cuenta, se cargan los datos de la
+  // cuenta nueva y los locales quedan como respaldo de la suya: nunca se suben
+  // a la nube de quien no es.
+  async function alEntrarEnCuenta(uid) {
+    const lectura = await leerNube();
+    if (!sesion || sesion.uid !== uid) return; // la sesion cambio mientras tanto
+    const dueno = leerCuenta(almacen);
+    if (!lectura.ok || lectura.uid !== uid) {
+      if (dueno && dueno !== uid) avisar("No se han podido cargar los datos de esta cuenta (¿sin conexión?). "
+        + "No se sincroniza nada hasta que vuelvas a abrir la app con conexión.");
+      return;
+    }
+    const d = decidirCuenta({
+      duenoLocal: dueno, uid, remoto: lectura.dato, respaldo: leerRespaldoCuenta(almacen, uid),
+    });
+    if (d.tipo === "misma") {
+      fijarCuenta(almacen, uid);
+      adoptarRemoto(lectura.dato);
+      return;
+    }
+    guardarRespaldoCuenta(almacen, dueno, estado);
+    const tema = estado.config.tema;
+    for (const k of Object.keys(estado)) delete estado[k];
+    Object.assign(estado, d.estado);
+    estado.config.tema = tema;
+    fijarCuenta(almacen, uid);
+    guardar(almacen, estado);
+    if (d.subir) persistir();
+    pintar();
+    avisar("Has entrado con otra cuenta de Google: se muestran sus datos. "
+      + "Los de la cuenta anterior siguen en su nube y en este dispositivo, sin mezclarse.");
+  }
+
+  function avisar(texto) {
+    const vista = raiz.querySelector("#vista");
+    if (!vista) return;
+    const nota = document.createElement("p");
+    nota.className = "aviso";
+    nota.textContent = texto;
+    vista.prepend(nota);
   }
 
   // Aviso no bloqueante cuando una copia remota mas reciente pisa ediciones
@@ -985,7 +1030,7 @@ export function iniciar(raiz, almacen) {
   alCambiarSesion((usuario) => {
     sesion = usuario;
     repintarAjustesSiAbierto();
-    if (sesion) cargarNube().then(adoptarRemoto);
+    if (sesion) alEntrarEnCuenta(sesion.uid);
   }, (err) => {
     // Volviendo de un login por redireccion (movil) que ha fallado: se abre
     // Ajustes con el motivo real en vez de dejar que parezca que "no ha
