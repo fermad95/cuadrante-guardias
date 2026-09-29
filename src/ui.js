@@ -1,7 +1,7 @@
 // src/ui.js
 import { diasDelMes, diaSemana, redondear } from "./fechas.js";
-import { sugerenciaPara, calcularGuardia } from "./motor.js";
-import { resumenMes, previsionIngreso, resumenAnio, compararHipotesis, tiposEfectivos, historialTipos } from "./nomina.js";
+import { sugerenciaPara, calcularGuardia, horarioLiquidado } from "./motor.js";
+import { resumenMes, resumenAnio, tiposEfectivos, historialTipos, ingresoDelMes, contrasteGuardias } from "./nomina.js";
 import { extraerTextoPdf, parsearNomina } from "./nomina-pdf.js";
 import { cargar, guardar, estadoInicial, importarEstado, mismaData, guardarPrevio, cargarPrevio } from "./estado.js";
 import { cargarRemoto, creaGuardadoRemoto, esMasReciente } from "./persistencia.js";
@@ -27,8 +27,7 @@ const LUGARES = [
   { sigla: "DSS", nombre: "Deccu Sector Sur" },
   { sigla: "DCP", nombre: "Deccu Castilla del Pino" },
 ];
-const AVISO_SIN_VERIFICAR =
-  "Regla del corte a medianoche sin verificar. Se confirma con la nómina de septiembre.";
+const HORAS_TIPO = { laborable: "laborables", sdf: "festivas", especial: "de festivo especial" };
 
 const eur = (n) => `${n.toFixed(2).replace(".", ",")} €`;
 
@@ -229,8 +228,8 @@ export function iniciar(raiz, almacen) {
       celdas.push(`<button type="button" class="${clases}" data-fecha="${fecha}" aria-label="${fecha}"><span class="num">${num}</span>${detalle}</button>`);
     }
     const r = resumenMes(mesVisible, estado);
-    const p = previsionIngreso(mesVisible, estado);
-    const c = compararHipotesis(mesVisible, estado);
+    const p = ingresoDelMes(mesVisible, estado);
+    const contraste = contrasteGuardias(mesVisible, estado);
     const sinMarcar = Object.entries(estado.guardias)
       .filter(([f, g]) => f.slice(0, 7) === mesVisible && !g.hecha).length;
 
@@ -275,19 +274,51 @@ export function iniciar(raiz, almacen) {
           <button id="marcar-mes">Marcar ${sinMarcar === 1
             ? "la guardia pendiente" : `las ${sinMarcar} guardias pendientes`} como realizada${sinMarcar === 1 ? "" : "s"}</button>
         </div>` : ""}
-        ${c.difieren ? `<p class="aviso">${AVISO_SIN_VERIFICAR}<br>
-          Con corte: ${eur(c.conCorte.brutoGuardias)} · sin corte: ${eur(c.sinCorte.brutoGuardias)}
-          · difieren en ${eur(c.diferencia)}.</p>` : ""}
       </div>
+      ${contraste ? vistaContraste(contraste) : ""}
       <div class="tarjeta">
         <strong class="etiqueta">Lo que ingresas este mes</strong>
         <table>
-          <tr><td>Nómina base</td><td class="cifra">${eur(p.base)}</td></tr>
-          <tr><td>Guardias de ${p.guardiasDe}</td><td class="cifra">${eur(p.importeGuardias)}</td></tr>
+          <tr><td>Nómina base <span class="tenue">(${p.baseReal ? "nómina real" : "previsión"})</span></td><td class="cifra">${eur(p.base)}</td></tr>
+          <tr><td>Guardias de ${p.guardiasDe} <span class="tenue">(${p.guardiasReal ? "nómina real" : "previsión"})</span></td><td class="cifra">${eur(p.importeGuardias)}</td></tr>
           <tr><td class="total">Total</td><td class="cifra total">${eur(p.total)}</td></tr>
         </table>
-        <p class="aviso">Las guardias se cobran en la nómina del mes siguiente.</p>
+        <p class="aviso">Las guardias se cobran en la nómina del mes siguiente.${p.prorrataVacaciones > 0
+          ? ` La de guardias incluye ${eur(p.prorrataVacaciones)} brutos de prorrata de vacaciones.` : ""}</p>
       </div>`;
+  }
+
+  // Lo que liquido el SAS frente a lo que sale del calendario. Las horas de
+  // guardia se comparan tipo a tipo; la prorrata de vacaciones va aparte
+  // porque no corresponde a ninguna guardia del calendario.
+  function vistaContraste(c) {
+    const filas = ["laborable", "sdf", "especial"]
+      .filter((t) => c.liquidadas[t] || c.calculadas[t])
+      .map((t) => `<tr><td><span class="punto punto-${t}"></span>Horas ${HORAS_TIPO[t]}</td>
+        <td class="cifra">${c.liquidadas[t]}h · calendario ${c.calculadas[t]}h${c.diferencias[t]
+          ? ` <span class="salto">${c.diferencias[t] > 0 ? "+" : ""}${c.diferencias[t]}h</span>` : ""}</td></tr>`).join("");
+    const d = c.diferenciaImporte;
+    const causa = c.porHorarioSAS
+      ? " La diferencia sale de que el SAS liquida de 08:00 a 08:00 aunque entres o salgas a las 09:00."
+      : " Revisa también que no falte ni sobre ninguna guardia en el calendario.";
+    const veredicto = c.cuadra
+      ? "Te han pagado exactamente las horas que hiciste."
+      : d < 0
+        ? `Te han pagado <strong>${eur(-d)} menos</strong> de lo que hiciste: puedes reclamarlo.${causa}`
+        : d > 0
+          ? `Te han pagado ${eur(d)} más de lo que sale de tus horas.${causa}`
+          : `Las horas no coinciden por tipo aunque el importe sea el mismo.${causa}`;
+    return `<div class="tarjeta">
+      <strong class="etiqueta">Liquidado por el SAS</strong>
+      <table>${filas}
+        <tr><td>Guardias</td><td class="cifra">${eur(c.importeLiquidado)}${c.diferenciaImporte
+          ? ` <span class="salto">${c.diferenciaImporte > 0 ? "+" : ""}${eur(c.diferenciaImporte)}</span>` : ""}</td></tr>
+        ${c.prorrataVacaciones ? `<tr><td>Prorrata de vacaciones${c.diasVacaciones
+          ? ` <span class="tenue">(${c.diasVacaciones} días)</span>` : ""}</td><td class="cifra">${eur(c.prorrataVacaciones)}</td></tr>` : ""}
+      </table>
+      <p class="aviso">${veredicto}${c.prorrataVacaciones
+        ? " La prorrata de vacaciones se paga aparte: no es ninguna guardia del calendario." : ""}</p>
+    </div>`;
   }
 
   function filaTipo(tipo, r) {
@@ -409,13 +440,34 @@ export function iniciar(raiz, almacen) {
         <button class="primario" data-pend-anadir="${i}">Añadir</button>
         <button data-pend-descartar="${i}">Descartar</button>
       </div>
+      ${p.original?.desglose ? `<p class="tenue">${esc(textoDesglose(p.original))}</p>` : ""}
+      ${(p.avisos || []).map((a) => `<p class="aviso">${esc(a)}</p>`).join("")}
       <p class="aviso" id="pend-error-${i}"></p></div>`;
+  }
+
+  // Resumen en una linea de lo que trae una nomina ademas de los totales.
+  function textoDesglose(n) {
+    const d = n.desglose;
+    if (!d || typeof d !== "object") return "";
+    const partes = [];
+    if (d.horas) {
+      const h = ["laborable", "sdf", "especial"].filter((t) => d.horas[t])
+        .map((t) => `${d.horas[t]}h ${HORAS_TIPO[t]}`);
+      if (h.length) partes.push(`${h.join(" + ")} (${eur(Number(d.guardias) || 0)})`);
+    }
+    if (d.prorrataVacaciones) {
+      partes.push(`prorrata de vacaciones ${eur(d.prorrataVacaciones)}${d.diasVacaciones ? ` por ${d.diasVacaciones} días` : ""}`);
+    }
+    if (n.irpf) partes.push(`IRPF ${eur(n.irpf)}`);
+    for (const o of d.otros || []) partes.push(`${o.nombre} ${eur(o.importe)}`);
+    return partes.join(" · ");
   }
 
   function vistaNominas() {
     const t = tiposEfectivos(estado.nominas, estado.config);
     const filas = estado.nominas.map((n, i) => `
-      <tr><td>${esc(n.periodo)} ${esc(n.clase)}</td><td class="cifra">${eur(n.bruto)} → ${eur(n.neto)}
+      <tr><td>${esc(n.periodo)} ${esc(n.clase)}${n.desglose
+        ? `<br><span class="tenue">${esc(textoDesglose(n))}</span>` : ""}</td><td class="cifra">${eur(n.bruto)} → ${eur(n.neto)}
       <button class="peligro" data-borrar-nomina="${i}">×</button></td></tr>`).join("");
     return `<div class="tarjeta"><strong class="etiqueta">Nóminas registradas</strong>
       <table>${filas}</table>
@@ -500,7 +552,6 @@ export function iniciar(raiz, almacen) {
 
     function pintarModal() {
       const r = calcularGuardia({ ...g, fecha }, estado.festivos, estado.config);
-      const tipos = [...new Set(r.tramos.map((t) => t.tipo))];
       const tramos = r.tramos.map((t) => `<tr><td>${t.fecha} ${t.desde}–${t.hasta}</td>
         <td class="cifra">${t.horas}h × ${eur(t.tarifa)} = ${eur(t.importe)}</td></tr>`).join("");
       caja.innerHTML = `
@@ -514,7 +565,9 @@ export function iniciar(raiz, almacen) {
         <p><label><input type="checkbox" id="m-hecha" ${g.hecha ? "checked" : ""}> Guardia ya realizada</label></p>
         <table style="margin-top:.75rem">${tramos}
           <tr><td class="total">bruto</td><td class="cifra total">${eur(r.bruto)}</td></tr></table>
-        ${tipos.length > 1 ? `<p class="aviso">${AVISO_SIN_VERIFICAR}</p>` : ""}
+        ${horarioLiquidado(g).horas !== g.horas || horarioLiquidado(g).inicio !== g.inicio
+          ? `<p class="aviso">Aquí se calculan las ${g.horas}h que haces. Ojo: el SAS suele liquidar
+            estas guardias de 08:00 a 08:00; compara con la nómina y reclama si te pagan menos.</p>` : ""}
         <div class="acciones-modal">
           <button class="peligro" id="m-borrar">Borrar</button>
           <button id="m-cancelar">Cancelar</button>
@@ -631,7 +684,8 @@ export function iniciar(raiz, almacen) {
         Partir las guardias a medianoche</label><br>
       <label><input type="checkbox" id="a-corte-esp" ${c.especialCortaAMedianoche ? "checked" : ""}>
         Partir también las de festivo especial</label>
-      <p class="aviso">${AVISO_SIN_VERIFICAR}</p>
+      <p class="aviso">Comprobado con las nóminas de julio y agosto de 2026: el SAS parte
+        las guardias a medianoche.</p>
 
       <p class="etiqueta-campo">Retenciones por defecto</p>
       <label>Base <input id="a-ret-base" value="${(c.retencionBase * 100).toFixed(4)}" size="6"> %</label>
@@ -838,6 +892,12 @@ export function iniciar(raiz, almacen) {
       if (!resultado.ok) {
         error.textContent = resultado.error;
       } else {
+        // El desglose leido del PDF solo acompana a la nomina si no se ha
+        // cambiado la clase ni el bruto: si se tocan, ya no describe lo guardado.
+        const o = pendientesNomina[i].original;
+        if (o?.desglose && o.clase === resultado.nomina.clase && o.bruto === resultado.nomina.bruto) {
+          resultado.nomina.desglose = o.desglose;
+        }
         estado.nominas.push(resultado.nomina);
         pendientesNomina.splice(i, 1);
         persistir(); pintar();
@@ -872,7 +932,8 @@ export function iniciar(raiz, almacen) {
       try {
         const buffer = await archivo.arrayBuffer();
         const texto = await extraerTextoPdf(buffer);
-        return { ok: true, nombreArchivo: archivo.name, datos: parsearNomina(texto) };
+        const { nomina, avisos } = parsearNomina(texto);
+        return { ok: true, nombreArchivo: archivo.name, datos: nomina, original: nomina, avisos };
       } catch (e) {
         return { ok: false, nombreArchivo: archivo.name, error: e.message };
       }

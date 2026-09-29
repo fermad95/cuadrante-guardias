@@ -166,3 +166,65 @@ export function compararHipotesis(anioMes, estado) {
     diferencia,
   };
 }
+
+// La nomina registrada de ese periodo y clase, si la hay (la ultima anadida
+// gana si hubiera dos, igual que en tipoReciente).
+export function nominaDe(nominas, periodo, clase) {
+  let hallada = null;
+  for (const n of nominas) if (n.periodo === periodo && n.clase === clase) hallada = n;
+  return hallada;
+}
+
+// Lo que ingresas en `anioMes`: la nomina real si ya esta registrada y, si no,
+// la prevision. Cada parte por separado, porque la base y las guardias llegan
+// en PDF distintos y puede estar registrada una y la otra no.
+export function ingresoDelMes(anioMes, estado) {
+  const p = previsionIngreso(anioMes, estado);
+  const base = nominaDe(estado.nominas, anioMes, "base");
+  const guardias = nominaDe(estado.nominas, p.guardiasDe, "guardias");
+  const baseNeto = base ? base.neto : p.base;
+  const guardiasNeto = guardias ? guardias.neto : p.importeGuardias;
+  return {
+    ...p,
+    base: baseNeto,
+    importeGuardias: guardiasNeto,
+    baseReal: Boolean(base),
+    guardiasReal: Boolean(guardias),
+    prorrataVacaciones: guardias?.desglose?.prorrataVacaciones || 0,
+    total: redondear(baseNeto + guardiasNeto),
+  };
+}
+
+// Compara lo que liquido el SAS en la complementaria de `anioMes` con lo que
+// sale de las guardias del calendario. Solo hay contraste si la nomina trae
+// desglose de horas (las importadas de PDF desde esta version); las
+// registradas antes, o a mano, no lo tienen y se devuelve null.
+export function contrasteGuardias(anioMes, estado) {
+  const n = nominaDe(estado.nominas, anioMes, "guardias");
+  const horas = n?.desglose?.horas;
+  if (!horas || typeof horas !== "object") return null;
+  const r = resumenMes(anioMes, estado);
+  const diferencias = {};
+  for (const tipo of ["laborable", "sdf", "especial"]) {
+    const d = redondear((Number(horas[tipo]) || 0) - r.horasPorTipo[tipo]);
+    if (d !== 0) diferencias[tipo] = d;
+  }
+  const liquidado = Number(n.desglose.guardias) || 0;
+  // Si la diferencia es exactamente la que sale de liquidar con el horario
+  // tipo del SAS (08:00 a 08:00), se dice: es la causa conocida.
+  const sas = resumenMes(anioMes, { ...estado, config: { ...estado.config, horarioSAS: true } });
+  const porHorarioSAS = Object.keys(diferencias).length > 0
+    && ["laborable", "sdf", "especial"].every((t) => (Number(horas[t]) || 0) === sas.horasPorTipo[t]);
+  return {
+    liquidadas: { laborable: Number(horas.laborable) || 0, sdf: Number(horas.sdf) || 0, especial: Number(horas.especial) || 0 },
+    calculadas: r.horasPorTipo,
+    diferencias,
+    cuadra: Object.keys(diferencias).length === 0,
+    importeLiquidado: liquidado,
+    importeCalculado: r.brutoGuardias,
+    diferenciaImporte: redondear(liquidado - r.brutoGuardias),
+    porHorarioSAS,
+    prorrataVacaciones: Number(n.desglose.prorrataVacaciones) || 0,
+    diasVacaciones: n.desglose.diasVacaciones ?? null,
+  };
+}

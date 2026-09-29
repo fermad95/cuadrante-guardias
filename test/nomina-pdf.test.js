@@ -1,102 +1,90 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { parsearNomina } from "../src/nomina-pdf.js";
 
-// Texto real extraído de dos "Justificante de nómina" del SAS (agosto 2026):
-// una Normal (sueldo base de agosto) y una Complementaria (guardias de
-// julio, liquidadas en la nómina de agosto). Las cifras coinciden con las ya
-// validadas contra nóminas reales en otras pruebas de este proyecto.
-const TEXTO_NORMAL = `
-Justificante de nómina
-28/08/2026 09:01:24
-DATOS DE LA EMPRESA
-Centro de Nómina: D. Córdoba
-DATOS DEL RECEPTOR
-Nombre: Apellidos, Nombre
-Categoría/puesto de desempeño: 27030 - - (M.I.R. 1º AÑO) Nivel: Nivel 00 Niv. Car. Pro.:
-Tip.nóm.emisión: Normal Fecha emisión: 2026-08 Periodo liquidación: 01/08/2026 al 31/08/2026
-Tip.nóm.afectación: Normal Fecha afectación: 2026-08 Días Nómina: 31 Porcentaje abono: 100,00 %
-Clave Denominación conceptos Devengos Base Porcentaje Descuentos
-001 SUELDO 1.379,90
-002
-003
-011
-COTIZACIÓN DESEMPLEO
-FORMACIÓN PROFES.
-COTIZAC.REG.GRAL.S.S
-1.610,10
-1.610,10
-1.989,30
-1,60
-0,10
-4,85
-25,76
-1,61
-96,48
-Total devengos: 1379,90 Total descuentos: 123,85
-Líquido a percibir: 1256,05
-`;
+// Texto real de cuatro "Justificante de nómina" del SAS, tal como lo saca
+// pdf.js (una celda por línea, igual que extraerTextoPdf). Se ha quitado todo
+// lo anterior a "Tip.nóm.emisión:" (nombre, NIF, NAF, IBAN): el repo es público.
+const fixture = (nombre) => readFileSync(new URL(`./fixtures/${nombre}.txt`, import.meta.url), "utf8");
+const NORMAL_AGO = fixture("normal-2026-08");
+const NORMAL_SEP = fixture("normal-2026-09");
+const COMPL_JUL = fixture("complementaria-2026-07");
+const COMPL_AGO = fixture("complementaria-2026-08");
 
-const TEXTO_COMPLEMENTARIA = `
-Justificante de nómina
-28/08/2026 09:01:46
-DATOS DEL RECEPTOR
-Nombre: Apellidos, Nombre
-Tip.nóm.emisión: Complementaria Fecha emisión: 2026-08 Periodo liquidación: 01/07/2026 al 31/07/2026
-Tip.nóm.afectación: Complementaria Fecha afectación: 2026-07 Días Nómina: Porcentaje abono: 100,00 %
-Clave Denominación conceptos Devengos Base Porcentaje Descuentos
-024
-025
-JORN.COMPLEMENTARIA
-JORN.COMPLT.SB-DM-FE
-844,20
-504,96
-002
-003
-011
-COTIZACIÓN DESEMPLEO
-FORMACIÓN PROFES.
-COTIZAC.REG.GRAL.S.S
-1.349,10
-1.349,10
-969,90
-1,60
-0,10
-4,85
-21,59
-1,35
-47,04
-Total devengos: 1349,16 Total descuentos: 69,98
-Líquido a percibir: 1279,18
-`;
-
-test("nomina Normal se parsea como base con el periodo del mes liquidado", () => {
-  const n = parsearNomina(TEXTO_NORMAL);
-  assert.deepEqual(n, {
+test("Normal de agosto: base, sin IRPF, cifras ya validadas", () => {
+  const { nomina, avisos } = parsearNomina(NORMAL_AGO);
+  assert.deepEqual(avisos, []);
+  assert.deepEqual(nomina, {
     periodo: "2026-08", clase: "base",
     bruto: 1379.90, neto: 1256.05, cotizacion: 123.85, irpf: 0,
+    desglose: { liquidacion: { desde: "2026-08-01", hasta: "2026-08-31" } },
   });
 });
 
-test("nomina Complementaria se parsea como guardias, periodo del mes trabajado", () => {
-  const n = parsearNomina(TEXTO_COMPLEMENTARIA);
-  // Cifras confirmadas contra la nomina real de julio ya registrada en la app.
-  assert.deepEqual(n, {
-    periodo: "2026-07", clase: "guardias",
-    bruto: 1349.16, neto: 1279.18, cotizacion: 69.98, irpf: 0,
+test("Normal de septiembre: primera con IRPF, se separa de la cotización", () => {
+  const { nomina } = parsearNomina(NORMAL_SEP);
+  assert.equal(nomina.periodo, "2026-09");
+  assert.equal(nomina.irpf, 73.27);
+  assert.equal(nomina.cotizacion, 123.85);
+  assert.equal(nomina.neto, 1182.78);
+});
+
+test("Complementaria de julio: 60h laborables y 32h festivas, sacadas del PDF", () => {
+  const { nomina } = parsearNomina(COMPL_JUL);
+  assert.equal(nomina.periodo, "2026-07");
+  assert.equal(nomina.clase, "guardias");
+  assert.deepEqual(nomina.desglose.horas, { laborable: 60, sdf: 32, especial: 0 });
+  assert.equal(nomina.desglose.guardias, 1349.16);
+  assert.equal(nomina.desglose.prorrataVacaciones, undefined);
+});
+
+test("Complementaria de agosto: guardias reales aparte de la prorrata de vacaciones", () => {
+  const { nomina, avisos } = parsearNomina(COMPL_AGO);
+  assert.deepEqual(avisos, []);
+  assert.deepEqual(nomina, {
+    periodo: "2026-08", clase: "guardias",
+    bruto: 1681.91, neto: 1500.83, cotizacion: 91.77, irpf: 89.31,
+    desglose: {
+      liquidacion: { desde: "2026-08-01", hasta: "2026-08-31" },
+      horas: { laborable: 59, sdf: 16, especial: 0 },
+      guardias: 1082.61,
+      prorrataVacaciones: 599.30,
+      diasVacaciones: 15,
+    },
   });
 });
 
-test("un periodo de liquidacion partido entre dos meses se rechaza", () => {
-  const texto = TEXTO_NORMAL.replace(
-    "Periodo liquidación: 01/08/2026 al 31/08/2026",
-    "Periodo liquidación: 25/07/2026 al 24/08/2026");
-  assert.throws(() => parsearNomina(texto), /no cae en un solo mes natural/);
+test("un periodo partido entre dos meses ya no se rechaza: se imputa a la fecha de afectación y se avisa", () => {
+  const texto = NORMAL_AGO.replace("01/08/2026 al 31/08/2026", "25/07/2026 al 24/08/2026");
+  const { nomina, avisos } = parsearNomina(texto);
+  assert.equal(nomina.periodo, "2026-08");
+  assert.match(avisos.join(" "), /más de un mes/);
 });
 
-test("un tipo de nomina desconocido se rechaza en vez de adivinar la clase", () => {
-  const texto = TEXTO_NORMAL.replace("Tip.nóm.emisión: Normal", "Tip.nóm.emisión: Extraordinaria");
-  assert.throws(() => parsearNomina(texto), /no reconocido/);
+test("un tipo de nómina desconocido se deduce por sus conceptos y se avisa", () => {
+  const texto = COMPL_AGO.replace("Tip.nóm.emisión:\n \nComplementaria", "Tip.nóm.emisión:\n \nAtrasos");
+  const { nomina, avisos } = parsearNomina(texto);
+  assert.equal(nomina.clase, "guardias");
+  assert.match(avisos.join(" "), /Atrasos/);
+});
+
+test("un concepto desconocido queda en 'otros', cuenta en el bruto y no como guardia", () => {
+  const texto = NORMAL_AGO
+    .replace("001\n \nSUELDO\n \n1.379,90", "001\n \nSUELDO\n \n1.379,90\n\n777\n\nATRASOS VARIOS\n\n20,00")
+    .replace("Total devengos: 1379,90", "Total devengos: 1399,90");
+  const { nomina, avisos } = parsearNomina(texto);
+  assert.deepEqual(nomina.desglose.otros, [{ nombre: "ATRASOS VARIOS", importe: 20 }]);
+  assert.match(avisos.join(" "), /ATRASOS VARIOS/);
+});
+
+test("si la tabla no cuadra con los totales, se guardan solo los totales y se avisa", () => {
+  const texto = COMPL_AGO.replace("Total devengos: 1681,91", "Total devengos: 1700,00");
+  const { nomina, avisos } = parsearNomina(texto);
+  assert.equal(nomina.desglose, undefined);
+  assert.equal(nomina.cotizacion, 181.08);
+  assert.equal(nomina.irpf, 0);
+  assert.match(avisos.join(" "), /No he podido leer/);
 });
 
 test("un PDF sin los totales esperados falla con un mensaje claro", () => {

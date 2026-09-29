@@ -64,8 +64,31 @@ export function partirGuardia(guardia, festivos, opciones = {}) {
   return tramos;
 }
 
+// El SAS no liquida la guardia con la hora real de entrada y salida sino con
+// su horario tipo, que cambia 08:00 por 09:00: una guardia que entra a las
+// 09:00 un dia sin jornada se paga desde las 08:00, y una que sale a las 09:00
+// se paga hasta las 08:00. Lo demuestran dos nominas reales que se desviaban
+// en sentidos opuestos: julio 2026 (viernes 10, 15:00-09:00) pago 1h festiva
+// menos, y agosto 2026 (domingo 2, 09:00-08:00) 1h festiva mas. Con esta regla
+// las dos cuadran a la hora: 60+32 y 59+16.
+//
+// La app calcula siempre con el horario real (lo que se debe cobrar); este
+// horario solo se usa para explicar por que la nomina paga distinto. Por eso
+// `horarioSAS` es una opcion interna de calculo, no un ajuste guardado.
+const NUEVE = 9 * 60;
+const OCHO = 8 * 60;
+
+export function horarioLiquidado(guardia) {
+  let inicio = aMinutos(guardia.inicio || inicioSugerido(guardia.horas));
+  let fin = inicio + Math.round(guardia.horas * 60);
+  if (inicio === NUEVE && fin > 1440) inicio = OCHO;
+  if (fin === 1440 + NUEVE) fin = 1440 + OCHO;
+  return { ...guardia, inicio: aHora(inicio), horas: (fin - inicio) / 60 };
+}
+
 export function calcularGuardia(guardia, festivos, config) {
-  const tramos = partirGuardia(guardia, festivos, config);
+  const liquidada = config.horarioSAS ? horarioLiquidado(guardia) : guardia;
+  const tramos = partirGuardia(liquidada, festivos, config);
   const horasPorTipo = { laborable: 0, sdf: 0, especial: 0 };
   const importePorTipo = { laborable: 0, sdf: 0, especial: 0 };
 

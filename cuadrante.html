@@ -707,8 +707,31 @@ function partirGuardia(guardia, festivos, opciones = {}) {
   return tramos;
 }
 
+// El SAS no liquida la guardia con la hora real de entrada y salida sino con
+// su horario tipo, que cambia 08:00 por 09:00: una guardia que entra a las
+// 09:00 un dia sin jornada se paga desde las 08:00, y una que sale a las 09:00
+// se paga hasta las 08:00. Lo demuestran dos nominas reales que se desviaban
+// en sentidos opuestos: julio 2026 (viernes 10, 15:00-09:00) pago 1h festiva
+// menos, y agosto 2026 (domingo 2, 09:00-08:00) 1h festiva mas. Con esta regla
+// las dos cuadran a la hora: 60+32 y 59+16.
+//
+// La app calcula siempre con el horario real (lo que se debe cobrar); este
+// horario solo se usa para explicar por que la nomina paga distinto. Por eso
+// `horarioSAS` es una opcion interna de calculo, no un ajuste guardado.
+const NUEVE = 9 * 60;
+const OCHO = 8 * 60;
+
+function horarioLiquidado(guardia) {
+  let inicio = aMinutos(guardia.inicio || inicioSugerido(guardia.horas));
+  let fin = inicio + Math.round(guardia.horas * 60);
+  if (inicio === NUEVE && fin > 1440) inicio = OCHO;
+  if (fin === 1440 + NUEVE) fin = 1440 + OCHO;
+  return { ...guardia, inicio: aHora(inicio), horas: (fin - inicio) / 60 };
+}
+
 function calcularGuardia(guardia, festivos, config) {
-  const tramos = partirGuardia(guardia, festivos, config);
+  const liquidada = config.horarioSAS ? horarioLiquidado(guardia) : guardia;
+  const tramos = partirGuardia(liquidada, festivos, config);
   const horasPorTipo = { laborable: 0, sdf: 0, especial: 0 };
   const importePorTipo = { laborable: 0, sdf: 0, especial: 0 };
 
@@ -893,6 +916,68 @@ function compararHipotesis(anioMes, estado) {
   };
 }
 
+// La nomina registrada de ese periodo y clase, si la hay (la ultima anadida
+// gana si hubiera dos, igual que en tipoReciente).
+function nominaDe(nominas, periodo, clase) {
+  let hallada = null;
+  for (const n of nominas) if (n.periodo === periodo && n.clase === clase) hallada = n;
+  return hallada;
+}
+
+// Lo que ingresas en `anioMes`: la nomina real si ya esta registrada y, si no,
+// la prevision. Cada parte por separado, porque la base y las guardias llegan
+// en PDF distintos y puede estar registrada una y la otra no.
+function ingresoDelMes(anioMes, estado) {
+  const p = previsionIngreso(anioMes, estado);
+  const base = nominaDe(estado.nominas, anioMes, "base");
+  const guardias = nominaDe(estado.nominas, p.guardiasDe, "guardias");
+  const baseNeto = base ? base.neto : p.base;
+  const guardiasNeto = guardias ? guardias.neto : p.importeGuardias;
+  return {
+    ...p,
+    base: baseNeto,
+    importeGuardias: guardiasNeto,
+    baseReal: Boolean(base),
+    guardiasReal: Boolean(guardias),
+    prorrataVacaciones: guardias?.desglose?.prorrataVacaciones || 0,
+    total: redondear(baseNeto + guardiasNeto),
+  };
+}
+
+// Compara lo que liquido el SAS en la complementaria de `anioMes` con lo que
+// sale de las guardias del calendario. Solo hay contraste si la nomina trae
+// desglose de horas (las importadas de PDF desde esta version); las
+// registradas antes, o a mano, no lo tienen y se devuelve null.
+function contrasteGuardias(anioMes, estado) {
+  const n = nominaDe(estado.nominas, anioMes, "guardias");
+  const horas = n?.desglose?.horas;
+  if (!horas || typeof horas !== "object") return null;
+  const r = resumenMes(anioMes, estado);
+  const diferencias = {};
+  for (const tipo of ["laborable", "sdf", "especial"]) {
+    const d = redondear((Number(horas[tipo]) || 0) - r.horasPorTipo[tipo]);
+    if (d !== 0) diferencias[tipo] = d;
+  }
+  const liquidado = Number(n.desglose.guardias) || 0;
+  // Si la diferencia es exactamente la que sale de liquidar con el horario
+  // tipo del SAS (08:00 a 08:00), se dice: es la causa conocida.
+  const sas = resumenMes(anioMes, { ...estado, config: { ...estado.config, horarioSAS: true } });
+  const porHorarioSAS = Object.keys(diferencias).length > 0
+    && ["laborable", "sdf", "especial"].every((t) => (Number(horas[t]) || 0) === sas.horasPorTipo[t]);
+  return {
+    liquidadas: { laborable: Number(horas.laborable) || 0, sdf: Number(horas.sdf) || 0, especial: Number(horas.especial) || 0 },
+    calculadas: r.horasPorTipo,
+    diferencias,
+    cuadra: Object.keys(diferencias).length === 0,
+    importeLiquidado: liquidado,
+    importeCalculado: r.brutoGuardias,
+    diferenciaImporte: redondear(liquidado - r.brutoGuardias),
+    porHorarioSAS,
+    prorrataVacaciones: Number(n.desglose.prorrataVacaciones) || 0,
+    diasVacaciones: n.desglose.diasVacaciones ?? null,
+  };
+}
+
 // src/nomina-pdf.js
 //
 // Lee el "Justificante de nómina" en PDF del SAS (Junta de Andalucía) y
@@ -926,22 +1011,30 @@ function cargarPdfjs() {
   return pdfjsPromesa;
 }
 
+// Un item de texto por linea, no separados por espacios: los nombres de los
+// conceptos llevan espacios dentro ("COTIZACIÓN DESEMPLEO") y la tabla de
+// conceptos solo se puede leer si cada celda queda en su propia linea.
 async function extraerTextoPdf(arrayBuffer) {
   const pdfjs = await cargarPdfjs();
   const doc = await pdfjs.getDocument({ data: arrayBuffer }).promise;
   const pagina = await doc.getPage(1);
   const contenido = await pagina.getTextContent();
-  return contenido.items.map((it) => it.str).join(" ");
+  return contenido.items.map((it) => it.str).join("\n");
 }
 
-// El SAS solo emite estos dos tipos para un residente: la nómina Normal (el
-// sueldo fijo del mes) y la Complementaria (liquidación de guardias del mes
-// anterior). Cualquier otro valor se rechaza en vez de adivinar la clase.
+// El SAS emite la nómina Normal (sueldo del mes) y la Complementaria
+// (guardias del mes anterior). Si llega otro tipo no se rechaza: la clase se
+// deduce de los conceptos que trae y se avisa en la tarjeta de revisión.
 const CLASE_POR_EMISION = { Normal: "base", Complementaria: "guardias" };
+
+const ES_IMPORTE = /^-?\d{1,3}(\.\d{3})*,\d{2}$/;
+const ES_CLAVE = /^\d{3}$/;
 
 function numero(texto) {
   return Number(texto.replace(/\./g, "").replace(",", "."));
 }
+
+const r2 = (n) => Math.round(n * 100) / 100;
 
 function capturar(texto, patron, etiqueta) {
   const m = texto.match(patron);
@@ -949,46 +1042,201 @@ function capturar(texto, patron, etiqueta) {
   return m;
 }
 
+function celdas(texto) {
+  return texto.split("\n").map((l) => l.trim()).filter((l) => l !== "");
+}
+
+// La tabla de conceptos sale del PDF por bloques de columnas: primero todas
+// las claves de un grupo de filas, luego todas sus denominaciones y luego sus
+// cifras columna a columna (una fila suelta puede salir en linea: clave,
+// nombre y cifras seguidos). Un grupo con una cifra por fila son devengos;
+// con tres (base, porcentaje, importe), descuentos. Cualquier otra forma no
+// se adivina: se devuelve null y la nómina se queda solo con los totales.
+function leerGrupos(lineas) {
+  const devengos = [];
+  const descuentos = [];
+  let i = 0;
+  while (i < lineas.length) {
+    const claves = [];
+    while (i < lineas.length && ES_CLAVE.test(lineas[i])) claves.push(lineas[i++]);
+    const nombres = [];
+    while (i < lineas.length && !ES_CLAVE.test(lineas[i]) && !ES_IMPORTE.test(lineas[i])) {
+      nombres.push(lineas[i++]);
+    }
+    const cifras = [];
+    while (i < lineas.length && ES_IMPORTE.test(lineas[i])) cifras.push(numero(lineas[i++]));
+    const n = claves.length;
+    if (n === 0 || nombres.length !== n) return null;
+    if (cifras.length === n) {
+      claves.forEach((clave, k) => devengos.push({ clave, nombre: nombres[k], importe: cifras[k] }));
+    } else if (cifras.length === 3 * n) {
+      claves.forEach((clave, k) => descuentos.push({
+        clave, nombre: nombres[k], base: cifras[k], porcentaje: cifras[n + k], importe: cifras[2 * n + k],
+      }));
+    } else {
+      return null;
+    }
+  }
+  return { devengos, descuentos };
+}
+
+function tramo(lineas, desde, hasta) {
+  const i = lineas.findIndex(desde);
+  if (i < 0) return [];
+  const resto = lineas.slice(i + 1);
+  const j = resto.findIndex(hasta);
+  return j < 0 ? resto : resto.slice(0, j);
+}
+
+// Tabla "Importe unitario": precio de la hora de cada concepto de guardia.
+// Sirve para pasar de euros a horas sin depender de las tarifas de la app.
+function leerImportesUnitarios(lineas) {
+  const t = tramo(lineas, (l) => l === "Importe unitario", () => false)
+    .filter((l) => !["Clave", "Denominación conceptos", "Importe"].includes(l));
+  const g = t.length ? leerGrupos(t) : null;
+  const precios = {};
+  if (g) for (const d of g.devengos) precios[d.clave] = d.importe;
+  return precios;
+}
+
+// Qué es cada concepto se decide por su nombre, no por la clave. Lo que no
+// se reconoce no se clasifica a ciegas: queda en "otros" y se avisa.
+function clasificarDevengo(nombre) {
+  const n = nombre.toUpperCase();
+  if (/PRORRATA/.test(n) && /VAC/.test(n)) {
+    return { tipo: "prorrata", dia: /SB-?DM-?FE/.test(n) ? "sdf" : "laborable" };
+  }
+  if (/^JORN\.?\s*COMPLEMENTARIA$/.test(n)) return { tipo: "guardia", dia: "laborable" };
+  if (/^JORN\.?\s*COMPLT\.?\s*SB-?DM-?FE$/.test(n)) return { tipo: "guardia", dia: "sdf" };
+  if (/^SUELDO$/.test(n)) return { tipo: "sueldo" };
+  return { tipo: "otro" };
+}
+
+function clasificarDescuento(nombre) {
+  const n = nombre.toUpperCase();
+  if (/I\.?\s*R\.?\s*P\.?\s*F/.test(n)) return "irpf";
+  if (/COTIZ|DESEMPLEO|FORMACI/.test(n)) return "cotizacion";
+  return "otro";
+}
+
+const euros = (n) => `${n.toFixed(2).replace(".", ",")} €`;
+
+// Devuelve { nomina, avisos }. `nomina` lleva los campos de siempre (periodo,
+// clase, bruto, neto, cotizacion, irpf) y, si la tabla de conceptos se ha
+// podido leer y cuadra al céntimo con los totales, un `desglose` opcional.
+// Los `avisos` son para la tarjeta de revisión: no se guardan.
 function parsearNomina(texto) {
+  const avisos = [];
   const [, tipoEmision] = capturar(
     texto, /Tip\.n[oó]m\.emisi[oó]n:\s*(\S+)/i, "Tip.nóm.emisión");
-  const clase = CLASE_POR_EMISION[tipoEmision];
-  if (!clase) throw new Error(`Tipo de nómina no reconocido: "${tipoEmision}".`);
 
   const [, diaIni, mes, anio, diaFin, mesFin, anioFin] = capturar(
     texto,
     /Periodo liquidaci[oó]n:\s*(\d{2})\/(\d{2})\/(\d{4})\s*al\s*(\d{2})\/(\d{2})\/(\d{4})/i,
     "Periodo liquidación");
-  // Todas las nominas reales vistas hasta ahora liquidan un mes natural
-  // completo. Si algun dia el SAS emite un periodo partido entre dos meses
-  // (p.ej. un alta o baja a mitad de mes), no hay forma fiable de decidir
-  // solo el aqui a que mes natural pertenece — mejor rechazarlo y que se
-  // registre a mano, con criterio, que adivinar.
+  // El mes al que se imputa lo dice el propio SAS en "Fecha afectación"; si
+  // faltara, el del inicio del periodo liquidado.
+  const afectacion = texto.match(/Fecha afectaci[oó]n:\s*(\d{4})-(\d{2})/i);
+  const periodo = afectacion ? `${afectacion[1]}-${afectacion[2]}` : `${anio}-${mes}`;
   if (mes !== mesFin || anio !== anioFin) {
-    throw new Error(
-      `El periodo de liquidación (${diaIni}/${mes}/${anio} al ${diaFin}/${mesFin}/${anioFin}) `
-      + "no cae en un solo mes natural: regístrala a mano.");
+    avisos.push(`Liquida del ${diaIni}/${mes}/${anio} al ${diaFin}/${mesFin}/${anioFin}, `
+      + `más de un mes: la registro en ${periodo}. Cámbialo si no es ese.`);
   }
-  const periodo = `${anio}-${mes}`;
 
   const [, brutoTexto] = capturar(texto, /Total devengos:\s*([\d.,]+)/i, "Total devengos");
   const [, descuentosTexto] = capturar(
     texto, /Total descuentos:\s*([\d.,]+)/i, "Total descuentos");
   const [, netoTexto] = capturar(
     texto, /L[ií]quido a percibir:\s*([\d.,]+)/i, "Líquido a percibir");
+  const bruto = numero(brutoTexto);
+  const totalDescuentos = numero(descuentosTexto);
+  const neto = numero(netoTexto);
 
-  // Hasta la primera regularización del residente el IRPF es 0 y el total de
-  // descuentos es íntegro cotización (así en todas las nóminas reales vistas
-  // hasta ahora). Si algún mes deja de ser así, el paso de revisión antes de
-  // guardar (en la UI) es donde se corrige a mano, igual que en el alta
-  // manual — no hace falta adivinarlo aquí.
-  return {
-    periodo, clase,
-    bruto: numero(brutoTexto),
-    neto: numero(netoTexto),
-    cotizacion: numero(descuentosTexto),
-    irpf: 0,
-  };
+  const lineas = celdas(texto);
+  const tabla = tramo(lineas, (l) => l === "Descuentos", (l) => /^Total devengos:/i.test(l));
+  const grupos = tabla.length ? leerGrupos(tabla) : null;
+  const suma = (lista) => r2(lista.reduce((s, x) => s + x.importe, 0));
+  const cuadra = Boolean(grupos)
+    && Math.abs(suma(grupos.devengos) - bruto) <= 0.02
+    && Math.abs(suma(grupos.descuentos) - totalDescuentos) <= 0.02;
+
+  let clase = CLASE_POR_EMISION[tipoEmision];
+  // Sin desglose legible se supone lo de siempre: todo el descuento es
+  // cotización. La tarjeta de revisión avisa para que se corrija a mano.
+  let cotizacion = totalDescuentos;
+  let irpf = 0;
+  let desglose = null;
+
+  if (!cuadra) {
+    avisos.push("No he podido leer la tabla de conceptos: se guardan solo los totales. "
+      + "Revisa la cotización y el IRPF con el PDF delante.");
+  } else {
+    const precios = leerImportesUnitarios(lineas);
+    const horas = { laborable: 0, sdf: 0, especial: 0 };
+    const importes = { laborable: 0, sdf: 0, especial: 0 };
+    let prorrata = 0;
+    const otros = [];
+    for (const d of grupos.devengos) {
+      const c = clasificarDevengo(d.nombre);
+      if (c.tipo === "guardia") {
+        importes[c.dia] = r2(importes[c.dia] + d.importe);
+        const precio = precios[d.clave];
+        if (precio > 0) horas[c.dia] = r2(horas[c.dia] + d.importe / precio);
+        else avisos.push(`No sé cuántas horas son los ${euros(d.importe)} de "${d.nombre}".`);
+      } else if (c.tipo === "prorrata") {
+        prorrata = r2(prorrata + d.importe);
+      } else if (c.tipo === "otro") {
+        otros.push({ nombre: d.nombre, importe: d.importe });
+        avisos.push(`Concepto que no conozco: "${d.nombre}" (${euros(d.importe)}). `
+          + "Cuenta en el bruto, pero no como guardia.");
+      }
+    }
+    const otrosDescuentos = [];
+    cotizacion = 0;
+    for (const d of grupos.descuentos) {
+      const tipo = clasificarDescuento(d.nombre);
+      if (tipo === "irpf") irpf = r2(irpf + d.importe);
+      else if (tipo === "cotizacion") cotizacion = r2(cotizacion + d.importe);
+      else {
+        otrosDescuentos.push({ nombre: d.nombre, importe: d.importe });
+        avisos.push(`Descuento que no es cotización ni IRPF: "${d.nombre}" (${euros(d.importe)}).`);
+      }
+    }
+    const brutoGuardias = r2(importes.laborable + importes.sdf + importes.especial);
+    if (!clase) {
+      clase = brutoGuardias + prorrata > 0 ? "guardias" : "base";
+      avisos.push(`Tipo de nómina "${tipoEmision}": por sus conceptos la registro como `
+        + `${clase === "guardias" ? "de guardias" : "base"}. Cámbialo si no es así.`);
+    }
+
+    desglose = {
+      liquidacion: { desde: `${anio}-${mes}-${diaIni}`, hasta: `${anioFin}-${mesFin}-${diaFin}` },
+    };
+    if (brutoGuardias > 0) {
+      desglose.horas = horas;
+      desglose.guardias = brutoGuardias;
+    }
+    if (prorrata > 0) desglose.prorrataVacaciones = prorrata;
+    // "Días afectados": las celdas vacías no salen en el texto, así que el
+    // número de días solo se asigna si hay uno por código o si Vacaciones es
+    // la primera fila (el único número que queda es entonces el suyo).
+    const dias = tramo(lineas, (l) => l === "Dias afectados", (l) => l === "Cotizaciones");
+    const codigos = dias.filter((l) => /^[A-Z]{2}$/.test(l));
+    const numeros = dias.filter((l) => /^\d+$/.test(l));
+    const k = codigos.indexOf("VD");
+    if (k >= 0 && (numeros.length === codigos.length || (k === 0 && numeros.length >= 1))) {
+      desglose.diasVacaciones = Number(numeros[k]);
+    }
+    if (otros.length) desglose.otros = otros;
+    if (otrosDescuentos.length) desglose.otrosDescuentos = otrosDescuentos;
+  }
+  if (!clase) {
+    throw new Error(`Tipo de nómina no reconocido ("${tipoEmision}") y sin conceptos legibles: regístrala a mano.`);
+  }
+
+  const nomina = { periodo, clase, bruto, neto, cotizacion, irpf };
+  if (desglose) nomina.desglose = desglose;
+  return { nomina, avisos };
 }
 
 // src/estado.js
@@ -1558,8 +1806,7 @@ const LUGARES = [
   { sigla: "DSS", nombre: "Deccu Sector Sur" },
   { sigla: "DCP", nombre: "Deccu Castilla del Pino" },
 ];
-const AVISO_SIN_VERIFICAR =
-  "Regla del corte a medianoche sin verificar. Se confirma con la nómina de septiembre.";
+const HORAS_TIPO = { laborable: "laborables", sdf: "festivas", especial: "de festivo especial" };
 
 const eur = (n) => `${n.toFixed(2).replace(".", ",")} €`;
 
@@ -1760,8 +2007,8 @@ function iniciar(raiz, almacen) {
       celdas.push(`<button type="button" class="${clases}" data-fecha="${fecha}" aria-label="${fecha}"><span class="num">${num}</span>${detalle}</button>`);
     }
     const r = resumenMes(mesVisible, estado);
-    const p = previsionIngreso(mesVisible, estado);
-    const c = compararHipotesis(mesVisible, estado);
+    const p = ingresoDelMes(mesVisible, estado);
+    const contraste = contrasteGuardias(mesVisible, estado);
     const sinMarcar = Object.entries(estado.guardias)
       .filter(([f, g]) => f.slice(0, 7) === mesVisible && !g.hecha).length;
 
@@ -1806,19 +2053,51 @@ function iniciar(raiz, almacen) {
           <button id="marcar-mes">Marcar ${sinMarcar === 1
             ? "la guardia pendiente" : `las ${sinMarcar} guardias pendientes`} como realizada${sinMarcar === 1 ? "" : "s"}</button>
         </div>` : ""}
-        ${c.difieren ? `<p class="aviso">${AVISO_SIN_VERIFICAR}<br>
-          Con corte: ${eur(c.conCorte.brutoGuardias)} · sin corte: ${eur(c.sinCorte.brutoGuardias)}
-          · difieren en ${eur(c.diferencia)}.</p>` : ""}
       </div>
+      ${contraste ? vistaContraste(contraste) : ""}
       <div class="tarjeta">
         <strong class="etiqueta">Lo que ingresas este mes</strong>
         <table>
-          <tr><td>Nómina base</td><td class="cifra">${eur(p.base)}</td></tr>
-          <tr><td>Guardias de ${p.guardiasDe}</td><td class="cifra">${eur(p.importeGuardias)}</td></tr>
+          <tr><td>Nómina base <span class="tenue">(${p.baseReal ? "nómina real" : "previsión"})</span></td><td class="cifra">${eur(p.base)}</td></tr>
+          <tr><td>Guardias de ${p.guardiasDe} <span class="tenue">(${p.guardiasReal ? "nómina real" : "previsión"})</span></td><td class="cifra">${eur(p.importeGuardias)}</td></tr>
           <tr><td class="total">Total</td><td class="cifra total">${eur(p.total)}</td></tr>
         </table>
-        <p class="aviso">Las guardias se cobran en la nómina del mes siguiente.</p>
+        <p class="aviso">Las guardias se cobran en la nómina del mes siguiente.${p.prorrataVacaciones > 0
+          ? ` La de guardias incluye ${eur(p.prorrataVacaciones)} brutos de prorrata de vacaciones.` : ""}</p>
       </div>`;
+  }
+
+  // Lo que liquido el SAS frente a lo que sale del calendario. Las horas de
+  // guardia se comparan tipo a tipo; la prorrata de vacaciones va aparte
+  // porque no corresponde a ninguna guardia del calendario.
+  function vistaContraste(c) {
+    const filas = ["laborable", "sdf", "especial"]
+      .filter((t) => c.liquidadas[t] || c.calculadas[t])
+      .map((t) => `<tr><td><span class="punto punto-${t}"></span>Horas ${HORAS_TIPO[t]}</td>
+        <td class="cifra">${c.liquidadas[t]}h · calendario ${c.calculadas[t]}h${c.diferencias[t]
+          ? ` <span class="salto">${c.diferencias[t] > 0 ? "+" : ""}${c.diferencias[t]}h</span>` : ""}</td></tr>`).join("");
+    const d = c.diferenciaImporte;
+    const causa = c.porHorarioSAS
+      ? " La diferencia sale de que el SAS liquida de 08:00 a 08:00 aunque entres o salgas a las 09:00."
+      : " Revisa también que no falte ni sobre ninguna guardia en el calendario.";
+    const veredicto = c.cuadra
+      ? "Te han pagado exactamente las horas que hiciste."
+      : d < 0
+        ? `Te han pagado <strong>${eur(-d)} menos</strong> de lo que hiciste: puedes reclamarlo.${causa}`
+        : d > 0
+          ? `Te han pagado ${eur(d)} más de lo que sale de tus horas.${causa}`
+          : `Las horas no coinciden por tipo aunque el importe sea el mismo.${causa}`;
+    return `<div class="tarjeta">
+      <strong class="etiqueta">Liquidado por el SAS</strong>
+      <table>${filas}
+        <tr><td>Guardias</td><td class="cifra">${eur(c.importeLiquidado)}${c.diferenciaImporte
+          ? ` <span class="salto">${c.diferenciaImporte > 0 ? "+" : ""}${eur(c.diferenciaImporte)}</span>` : ""}</td></tr>
+        ${c.prorrataVacaciones ? `<tr><td>Prorrata de vacaciones${c.diasVacaciones
+          ? ` <span class="tenue">(${c.diasVacaciones} días)</span>` : ""}</td><td class="cifra">${eur(c.prorrataVacaciones)}</td></tr>` : ""}
+      </table>
+      <p class="aviso">${veredicto}${c.prorrataVacaciones
+        ? " La prorrata de vacaciones se paga aparte: no es ninguna guardia del calendario." : ""}</p>
+    </div>`;
   }
 
   function filaTipo(tipo, r) {
@@ -1940,13 +2219,34 @@ function iniciar(raiz, almacen) {
         <button class="primario" data-pend-anadir="${i}">Añadir</button>
         <button data-pend-descartar="${i}">Descartar</button>
       </div>
+      ${p.original?.desglose ? `<p class="tenue">${esc(textoDesglose(p.original))}</p>` : ""}
+      ${(p.avisos || []).map((a) => `<p class="aviso">${esc(a)}</p>`).join("")}
       <p class="aviso" id="pend-error-${i}"></p></div>`;
+  }
+
+  // Resumen en una linea de lo que trae una nomina ademas de los totales.
+  function textoDesglose(n) {
+    const d = n.desglose;
+    if (!d || typeof d !== "object") return "";
+    const partes = [];
+    if (d.horas) {
+      const h = ["laborable", "sdf", "especial"].filter((t) => d.horas[t])
+        .map((t) => `${d.horas[t]}h ${HORAS_TIPO[t]}`);
+      if (h.length) partes.push(`${h.join(" + ")} (${eur(Number(d.guardias) || 0)})`);
+    }
+    if (d.prorrataVacaciones) {
+      partes.push(`prorrata de vacaciones ${eur(d.prorrataVacaciones)}${d.diasVacaciones ? ` por ${d.diasVacaciones} días` : ""}`);
+    }
+    if (n.irpf) partes.push(`IRPF ${eur(n.irpf)}`);
+    for (const o of d.otros || []) partes.push(`${o.nombre} ${eur(o.importe)}`);
+    return partes.join(" · ");
   }
 
   function vistaNominas() {
     const t = tiposEfectivos(estado.nominas, estado.config);
     const filas = estado.nominas.map((n, i) => `
-      <tr><td>${esc(n.periodo)} ${esc(n.clase)}</td><td class="cifra">${eur(n.bruto)} → ${eur(n.neto)}
+      <tr><td>${esc(n.periodo)} ${esc(n.clase)}${n.desglose
+        ? `<br><span class="tenue">${esc(textoDesglose(n))}</span>` : ""}</td><td class="cifra">${eur(n.bruto)} → ${eur(n.neto)}
       <button class="peligro" data-borrar-nomina="${i}">×</button></td></tr>`).join("");
     return `<div class="tarjeta"><strong class="etiqueta">Nóminas registradas</strong>
       <table>${filas}</table>
@@ -2031,7 +2331,6 @@ function iniciar(raiz, almacen) {
 
     function pintarModal() {
       const r = calcularGuardia({ ...g, fecha }, estado.festivos, estado.config);
-      const tipos = [...new Set(r.tramos.map((t) => t.tipo))];
       const tramos = r.tramos.map((t) => `<tr><td>${t.fecha} ${t.desde}–${t.hasta}</td>
         <td class="cifra">${t.horas}h × ${eur(t.tarifa)} = ${eur(t.importe)}</td></tr>`).join("");
       caja.innerHTML = `
@@ -2045,7 +2344,9 @@ function iniciar(raiz, almacen) {
         <p><label><input type="checkbox" id="m-hecha" ${g.hecha ? "checked" : ""}> Guardia ya realizada</label></p>
         <table style="margin-top:.75rem">${tramos}
           <tr><td class="total">bruto</td><td class="cifra total">${eur(r.bruto)}</td></tr></table>
-        ${tipos.length > 1 ? `<p class="aviso">${AVISO_SIN_VERIFICAR}</p>` : ""}
+        ${horarioLiquidado(g).horas !== g.horas || horarioLiquidado(g).inicio !== g.inicio
+          ? `<p class="aviso">Aquí se calculan las ${g.horas}h que haces. Ojo: el SAS suele liquidar
+            estas guardias de 08:00 a 08:00; compara con la nómina y reclama si te pagan menos.</p>` : ""}
         <div class="acciones-modal">
           <button class="peligro" id="m-borrar">Borrar</button>
           <button id="m-cancelar">Cancelar</button>
@@ -2162,7 +2463,8 @@ function iniciar(raiz, almacen) {
         Partir las guardias a medianoche</label><br>
       <label><input type="checkbox" id="a-corte-esp" ${c.especialCortaAMedianoche ? "checked" : ""}>
         Partir también las de festivo especial</label>
-      <p class="aviso">${AVISO_SIN_VERIFICAR}</p>
+      <p class="aviso">Comprobado con las nóminas de julio y agosto de 2026: el SAS parte
+        las guardias a medianoche.</p>
 
       <p class="etiqueta-campo">Retenciones por defecto</p>
       <label>Base <input id="a-ret-base" value="${(c.retencionBase * 100).toFixed(4)}" size="6"> %</label>
@@ -2369,6 +2671,12 @@ function iniciar(raiz, almacen) {
       if (!resultado.ok) {
         error.textContent = resultado.error;
       } else {
+        // El desglose leido del PDF solo acompana a la nomina si no se ha
+        // cambiado la clase ni el bruto: si se tocan, ya no describe lo guardado.
+        const o = pendientesNomina[i].original;
+        if (o?.desglose && o.clase === resultado.nomina.clase && o.bruto === resultado.nomina.bruto) {
+          resultado.nomina.desglose = o.desglose;
+        }
         estado.nominas.push(resultado.nomina);
         pendientesNomina.splice(i, 1);
         persistir(); pintar();
@@ -2403,7 +2711,8 @@ function iniciar(raiz, almacen) {
       try {
         const buffer = await archivo.arrayBuffer();
         const texto = await extraerTextoPdf(buffer);
-        return { ok: true, nombreArchivo: archivo.name, datos: parsearNomina(texto) };
+        const { nomina, avisos } = parsearNomina(texto);
+        return { ok: true, nombreArchivo: archivo.name, datos: nomina, original: nomina, avisos };
       } catch (e) {
         return { ok: false, nombreArchivo: archivo.name, error: e.message };
       }

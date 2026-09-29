@@ -1,0 +1,183 @@
+Tip.nóm.emisión:
+ 
+Normal
+ 
+Fecha emisión:
+ 
+2026-08
+ 
+Periodo liquidación:
+ 
+01/08/2026 al 31/08/2026
+
+Tip.nóm.afectación:
+ 
+Normal
+ 
+Fecha afectación:
+ 
+2026-08
+ 
+Días Nómina:
+ 
+31
+ 
+Porcentaje abono:
+ 
+100,00 %
+
+Clave
+ 
+Denominación conceptos
+ 
+Devengos
+ 
+Base
+ 
+Porcentaje
+ 
+Descuentos
+
+001
+ 
+SUELDO
+ 
+1.379,90
+
+002
+
+003
+
+011
+
+COTIZACIÓN DESEMPLEO
+
+FORMACIÓN PROFES.
+
+COTIZAC.REG.GRAL.S.S
+
+1.610,10
+
+1.610,10
+
+1.989,30
+
+1,60
+
+0,10
+
+4,85
+
+25,76
+
+1,61
+
+96,48
+
+Total devengos: 1379,90
+ 
+Total descuentos: 123,85
+
+Líquido a percibir:
+ 
+1256,05
+
+Dias afectados
+
+Clave
+ 
+Denominación día
+ 
+Número de días
+
+LI
+ 
+Días de Liquidación
+ 
+31
+
+Cotizaciones
+
+Clave
+ 
+Aportación de la empresa
+ 
+Base
+ 
+Tipo
+ 
+Cuota
+
+01
+
+31
+
+32
+
+51
+
+71
+
+CONTINGENCIAS COMUNES
+
+CNAE/EPI INCAPACIDAD TEMPORAL
+
+CNAE/EPI INVALIDEZ, MUERTE Y SUPERVIVENCIA (IMS)
+
+DESEMPLEO
+
+FORMACIÓN PROFESIONAL
+
+1.989,30
+
+1.610,10
+
+1.610,10
+
+1.610,10
+
+1.610,10
+
+24,35
+
+0,80
+
+0,70
+
+6,70
+
+0,60
+
+484,39
+
+12,88
+
+11,27
+
+107,88
+
+9,66
+
+Total empresa:
+ 
+626,08
+
+Incidencias
+
+Clave
+ 
+Denominación incidencia
+ 
+Periodo
+ 
+Valor 1
+ 
+Valor 2
+
+Importe unitario
+
+Clave
+ 
+Denominación conceptos
+ 
+Importe
