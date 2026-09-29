@@ -571,9 +571,16 @@ function anioResidenciaEn(fechaISO, inicioResidencia) {
   return Math.min(5, Math.max(1, anios + 1));
 }
 
+// `config.preciosNomina` (lo pone nomina.js, no se guarda) trae, por mes, los
+// precios por hora que pago el SAS segun la complementaria de ese mes: si
+// existen y son del mismo anio de residencia, mandan sobre la tabla. Asi los
+// meses ya liquidados se calculan con lo que se pago de verdad aunque el
+// convenio cambie, y las previsiones siguen con la tabla (anexo o Ajustes).
 function tarifaEn(fechaISO, config) {
   const anio = anioResidenciaEn(fechaISO, config.inicioResidencia);
-  return retribucionesDe(config).guardias[anio];
+  const tabla = retribucionesDe(config).guardias[anio];
+  const delMes = config.preciosNomina && config.preciosNomina[fechaISO.slice(0, 7)];
+  return delMes && delMes.anio === anio ? { ...tabla, ...delMes.precios } : tabla;
 }
 
 function retribucionFija(anioResidencia, config) {
@@ -912,13 +919,14 @@ function resumenMes(anioMes, estado) {
 
   const horasPorTipo = { laborable: 0, sdf: 0, especial: 0 };
   const importePorTipo = { laborable: 0, sdf: 0, especial: 0 };
+  const config = configConPrecios(estado);
   let nGuardias = 0;
   let brutoConfirmado = 0;
 
   for (const [fecha, guardia] of Object.entries(estado.guardias)) {
     if (mesDe(fecha) !== anioMes) continue;
     nGuardias += 1;
-    const r = calcularGuardia({ ...guardia, fecha }, estado.festivos, estado.config);
+    const r = calcularGuardia({ ...guardia, fecha }, estado.festivos, config);
     for (const tipo of ["laborable", "sdf", "especial"]) {
       horasPorTipo[tipo] += r.horasPorTipo[tipo];
       importePorTipo[tipo] = redondear(importePorTipo[tipo] + r.importePorTipo[tipo]);
@@ -1092,6 +1100,84 @@ function diferenciasConSAS(estado) {
     pagadoDeMas: suma(filas.filter((f) => f.diferencia > 0)),
     saldo: suma(filas),
   };
+}
+
+// Precios por hora de cada complementaria con desglose, por mes liquidado,
+// para que tarifaEn calcule ese mes con lo que pago el SAS de verdad.
+function preciosDeNominas(estado) {
+  const mapa = {};
+  for (const n of estado.nominas) {
+    const p = n.clase === "guardias" && n.desglose && n.desglose.precios;
+    if (!p || typeof p !== "object") continue;
+    const precios = {};
+    for (const t of ["laborable", "sdf", "especial"]) if (Number(p[t]) > 0) precios[t] = Number(p[t]);
+    if (Object.keys(precios).length === 0) continue;
+    mapa[n.periodo] = { anio: anioResidenciaEn(`${n.periodo}-15`, estado.config.inicioResidencia), precios };
+  }
+  return mapa;
+}
+
+function configConPrecios(estado) {
+  return { ...estado.config, preciosNomina: preciosDeNominas(estado) };
+}
+
+// Compara los precios de la ultima complementaria con la tabla con la que la
+// app hace las previsiones (anexo XVI o lo puesto en Ajustes). Si no
+// coinciden, el convenio ha cambiado (o la tabla esta mal) y las previsiones
+// de los meses siguientes se quedarian desfasadas.
+function tarifasDesfasadas(estado) {
+  const conPrecios = estado.nominas
+    .filter((n) => n.clase === "guardias" && n.desglose && n.desglose.precios && typeof n.desglose.precios === "object")
+    .sort((a, b) => (a.periodo < b.periodo ? -1 : a.periodo > b.periodo ? 1 : 0));
+  const ultima = conPrecios[conPrecios.length - 1];
+  if (!ultima) return null;
+  const anio = anioResidenciaEn(`${ultima.periodo}-15`, estado.config.inicioResidencia);
+  const tabla = retribucionesDe(estado.config).guardias[anio];
+  const distintos = {};
+  for (const t of ["laborable", "sdf", "especial"]) {
+    const real = Number(ultima.desglose.precios[t]);
+    if (real > 0 && Math.abs(real - tabla[t]) > 0.004) distintos[t] = { nomina: real, app: tabla[t] };
+  }
+  return Object.keys(distintos).length ? { periodo: ultima.periodo, anio, distintos } : null;
+}
+
+// Resumen anual en CSV para Excel en espanol: separador ";", coma decimal y
+// BOM para que abra bien las tildes. Una fila por mes con lo calculado y, si
+// la hay, la nomina real (bruto, neto, cotizacion, IRPF), mas una de totales.
+function csvAnual(anio, estado) {
+  const r = resumenAnio(anio, estado);
+  const num = (x) => (typeof x === "number" && Number.isFinite(x) ? x.toFixed(2).replace(".", ",") : "");
+  const horas = (x) => String(x).replace(".", ",");
+  const cab = ["Mes", "Horas laborables", "Horas festivas", "Horas festivo especial",
+    "Bruto base", "Paga extra", "Bruto guardias", "Bruto total",
+    "Neto base", "Neto guardias", "Neto total", "Origen del neto",
+    "Nomina base: bruto", "neto", "cotizacion", "IRPF",
+    "Nomina guardias: bruto", "neto", "cotizacion", "IRPF", "prorrata vacaciones"];
+  const filas = [cab];
+  const suma = {};
+  const acumula = (k, v) => { if (typeof v === "number") suma[k] = redondear((suma[k] || 0) + v); };
+  for (const m of r.meses) {
+    const b = nominaDe(estado.nominas, m.anioMes, "base");
+    const g = nominaDe(estado.nominas, m.anioMes, "guardias");
+    const origen = m.netoBaseReal && (m.netoGuardiasReal || m.brutoGuardias === 0) ? "nomina real"
+      : m.netoBaseReal || m.netoGuardiasReal ? "mixto" : "prevision";
+    const fila = [m.anioMes, horas(m.horasPorTipo.laborable), horas(m.horasPorTipo.sdf), horas(m.horasPorTipo.especial),
+      num(m.brutoBase), num(m.pagaExtra), num(m.brutoGuardias), num(m.bruto),
+      num(m.netoBase), num(m.netoGuardias), num(m.neto), origen,
+      num(b?.bruto), num(b?.neto), num(b?.cotizacion), num(b?.irpf),
+      num(g?.bruto), num(g?.neto), num(g?.cotizacion), num(g?.irpf), num(g?.desglose?.prorrataVacaciones)];
+    filas.push(fila);
+    [["bb", m.brutoBase], ["pe", m.pagaExtra], ["bg", m.brutoGuardias], ["bt", m.bruto], ["nb", m.netoBase],
+      ["ng", m.netoGuardias], ["nt", m.neto], ["rbb", b?.bruto], ["rbn", b?.neto], ["rbc", b?.cotizacion],
+      ["rbi", b?.irpf], ["rgb", g?.bruto], ["rgn", g?.neto], ["rgc", g?.cotizacion], ["rgi", g?.irpf],
+      ["rgp", g?.desglose?.prorrataVacaciones]].forEach(([k, v]) => acumula(k, v));
+  }
+  filas.push([`Total ${anio}`, horas(r.horasPorTipo.laborable), horas(r.horasPorTipo.sdf), horas(r.horasPorTipo.especial),
+    num(suma.bb), num(suma.pe), num(suma.bg), num(suma.bt), num(suma.nb), num(suma.ng), num(suma.nt), "",
+    num(suma.rbb), num(suma.rbn), num(suma.rbc), num(suma.rbi), num(suma.rgb), num(suma.rgn), num(suma.rgc),
+    num(suma.rgi), num(suma.rgp)]);
+  const celda = (x) => (/[;"\n]/.test(x) ? `"${x.replace(/"/g, '""')}"` : x);
+  return "\uFEFF" + filas.map((f) => f.map((x) => celda(String(x))).join(";")).join("\r\n") + "\r\n";
 }
 
 // src/nomina-pdf.js
@@ -1297,6 +1383,7 @@ function parsearNomina(texto) {
     const importes = { laborable: 0, sdf: 0, especial: 0 };
     let prorrata = 0;
     let pagaExtra = 0;
+    const preciosHora = {};
     let horasDesconocidas = false;
     const otros = [];
     for (const d of grupos.devengos) {
@@ -1304,6 +1391,7 @@ function parsearNomina(texto) {
       if (c.tipo === "guardia") {
         importes[c.dia] = r2(importes[c.dia] + d.importe);
         const precio = precios[d.clave];
+        if (precio > 0) preciosHora[c.dia] = precio;
         if (precio > 0) horas[c.dia] = r2(horas[c.dia] + d.importe / precio);
         else {
           horasDesconocidas = true;
@@ -1345,6 +1433,7 @@ function parsearNomina(texto) {
       // Unas horas a medias (0 donde no se supo el precio) harian que el
       // contraste con el calendario diera una diferencia falsa: o todas o ninguna.
       if (!horasDesconocidas) desglose.horas = horas;
+      if (Object.keys(preciosHora).length) desglose.precios = preciosHora;
       desglose.guardias = brutoGuardias;
     }
     if (prorrata > 0) desglose.prorrataVacaciones = prorrata;
@@ -2028,6 +2117,24 @@ const LUGARES = [
 ];
 const HORAS_TIPO = { laborable: "laborables", sdf: "festivas", especial: "de festivo especial" };
 
+// Los lugares de guardia de cada hospital: por defecto los de arriba, y cada
+// usuario puede poner los suyos en Ajustes (config.lugares). Las guardias
+// guardan solo la sigla, asi que quitar un lugar de la lista no las toca.
+function lugaresDe(config) {
+  const l = config && config.lugares;
+  return Array.isArray(l) && l.every((x) => x && typeof x.sigla === "string" && typeof x.nombre === "string")
+    ? l : LUGARES;
+}
+
+const textoLugares = (lista) => lista.map((l) => `${l.sigla} ${l.nombre}`).join("\n");
+
+function leerLugares(texto) {
+  return texto.split("\n").map((linea) => linea.trim()).filter(Boolean).map((linea) => {
+    const [sigla, ...resto] = linea.split(/\s+/);
+    return { sigla: sigla.slice(0, 8), nombre: resto.join(" ") || sigla };
+  });
+}
+
 const eur = (n) => `${n.toFixed(2).replace(".", ",")} €`;
 
 const esc = (t) => String(t).replace(/[&<>"']/g, (c) =>
@@ -2262,12 +2369,12 @@ function iniciar(raiz, almacen) {
       if (fecha === hoy) clases += " hoy";
       let detalle = "";
       if (g) {
-        const r = calcularGuardia({ ...g, fecha }, estado.festivos, estado.config);
+        const r = calcularGuardia({ ...g, fecha }, estado.festivos, configConPrecios(estado));
         const tipos = [...new Set(r.tramos.map((t) => t.tipo))];
         clases += ` ${tipos[0]}`;
         if (!g.hecha) clases += " prevista";
         detalle = `<span class="horas">${g.horas}h</span>`;
-        if (g.lugar) detalle += `<span class="lugar">${g.lugar}</span>`;
+        if (g.lugar) detalle += `<span class="lugar">${esc(g.lugar)}</span>`;
         if (tipos.length > 1) detalle += `<span class="cruza">cruza</span>`;
       }
       celdas.push(`<button type="button" class="${clases}" data-fecha="${fecha}" aria-label="${fecha}"><span class="num">${num}</span>${detalle}</button>`);
@@ -2540,7 +2647,15 @@ function iniciar(raiz, almacen) {
         ? `<br><span class="tenue">${esc(textoDesglose(n))}</span>` : ""}</td><td class="cifra">${eur(n.bruto)} → ${eur(n.neto)}
       <button data-editar-nomina="${i}" aria-label="Editar">✎</button>
       <button class="peligro" data-borrar-nomina="${i}" aria-label="Borrar">×</button></td></tr>`).join("");
-    return `<div class="tarjeta"><strong class="etiqueta">Nóminas registradas</strong>
+    const desfase = tarifasDesfasadas(estado);
+    const TIPO_TARIFA = { laborable: "laborable", sdf: "festiva (S-D-F)", especial: "de festivo especial" };
+    const avisoTarifas = desfase ? `<div class="tarjeta"><strong class="etiqueta">Tarifas de guardia</strong>
+      <p class="aviso">Tu nómina de ${esc(desfase.periodo)} paga ${Object.entries(desfase.distintos)
+        .map(([t, v]) => `la hora ${TIPO_TARIFA[t]} a <strong>${eur(v.nomina)}</strong> (la app prevé con ${eur(v.app)})`)
+        .join(" y ")}. Los meses con nómina ya se calculan con lo pagado; para que las previsiones
+        de los siguientes cuadren, actualiza las tarifas de R${desfase.anio}.</p>
+      <button class="primario" id="n-actualizar-tarifas">Actualizar tarifas de R${desfase.anio}</button></div>` : "";
+    return `${avisoTarifas}<div class="tarjeta"><strong class="etiqueta">Nóminas registradas</strong>
       ${deshacer ? `<p class="aviso">Nómina ${esc(deshacer.nomina.periodo)} ${esc(deshacer.nomina.clase)} borrada.
         <button data-deshacer>Deshacer</button></p>` : ""}
       <table>${filas}</table>
@@ -2641,7 +2756,22 @@ function iniciar(raiz, almacen) {
       <tr><td><span class="punto punto-especial"></span>Horas de festivo especial</td><td class="cifra">${r.horasPorTipo.especial}h</td></tr>
       <tr><td>Bruto del año</td><td class="cifra">${eur(r.bruto)}</td></tr>
       <tr><td class="total">Neto del año</td><td class="cifra total">${eur(r.neto)}</td></tr>
-    </table></div>`;
+    </table>
+    <div class="chips" style="margin-top:.9rem"><button id="descargar-csv">Descargar ${anio} para Excel</button></div>
+    <p class="aviso">Un fichero con cada mes: horas, brutos, netos y, si están registradas,
+      las cifras de tus nóminas reales (cotización, IRPF, prorrata).</p></div>`;
+  }
+
+  function descargarCsv() {
+    const anio = Number(mesVisible.slice(0, 4));
+    const blob = new Blob([csvAnual(anio, estado)], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `cuadrante-${anio}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
   }
 
   function abrirModal(fecha) {
@@ -2652,7 +2782,7 @@ function iniciar(raiz, almacen) {
     const caja = raiz.querySelector("#caja-modal");
 
     function pintarModal() {
-      const r = calcularGuardia({ ...g, fecha }, estado.festivos, estado.config);
+      const r = calcularGuardia({ ...g, fecha }, estado.festivos, configConPrecios(estado));
       const tramos = r.tramos.map((t) => `<tr><td>${t.fecha} ${t.desde}–${t.hasta}</td>
         <td class="cifra">${t.horas}h × ${eur(t.tarifa)} = ${eur(t.importe)}</td></tr>`).join("");
       caja.innerHTML = `
@@ -2661,13 +2791,15 @@ function iniciar(raiz, almacen) {
         <div class="chips">${DURACIONES.map((h) => `<button data-horas="${h}" class="${g.horas === h ? "activo" : ""}">${h}h</button>`).join(" ")}</div>
         <p class="etiqueta-campo">Hora de inicio <input id="m-inicio" value="${g.inicio}" size="5"></p>
         <p class="etiqueta-campo">Lugar</p>
-        <div class="chips">${LUGARES.map((l) => `<button data-lugar="${l.sigla}" class="${g.lugar === l.sigla ? "activo" : ""}">${l.nombre}</button>`).join(" ")}
+        <div class="chips">${[...lugaresDe(estado.config),
+          ...(g.lugar && !lugaresDe(estado.config).some((l) => l.sigla === g.lugar) ? [{ sigla: g.lugar, nombre: g.lugar }] : [])]
+          .map((l) => `<button data-lugar="${esc(l.sigla)}" class="${g.lugar === l.sigla ? "activo" : ""}">${esc(l.nombre)}</button>`).join(" ")}
              <button data-lugar="" class="${g.lugar === "" ? "activo" : ""}">sin especificar</button></div>
         <p><label><input type="checkbox" id="m-hecha" ${g.hecha ? "checked" : ""}> Guardia ya realizada</label></p>
         <table style="margin-top:.75rem">${tramos}
           <tr><td class="total">bruto</td><td class="cifra total">${eur(r.bruto)}</td></tr></table>
         ${(() => {
-          const sas = calcularGuardia({ ...g, fecha }, estado.festivos, { ...estado.config, horarioSAS: true });
+          const sas = calcularGuardia({ ...g, fecha }, estado.festivos, { ...configConPrecios(estado), horarioSAS: true });
           const d = redondear(sas.bruto - r.bruto);
           return d === 0 ? "" : `<p class="aviso">Aquí se calculan las ${g.horas}h que haces. Ojo: el SAS
             suele liquidar estas guardias de 08:00 a 08:00, y con eso pagaría ${eur(Math.abs(d))}
@@ -2792,6 +2924,11 @@ function iniciar(raiz, almacen) {
       <p class="aviso">Comprobado con las nóminas de julio y agosto de 2026: el SAS parte
         las guardias a medianoche.</p>
 
+      <p class="etiqueta-campo">Lugares de guardia</p>
+      <textarea id="a-lugares" rows="5" spellcheck="false">${esc(textoLugares(lugaresDe(c)))}</textarea>
+      <p class="aviso">Uno por línea: la sigla y el nombre (por ejemplo «URG Puerta de Urgencias»).
+        Las guardias ya apuntadas conservan su sigla aunque la quites de aquí.</p>
+
       <p class="etiqueta-campo">Retenciones por defecto</p>
       <label>Base <input id="a-ret-base" value="${(c.retencionBase * 100).toFixed(4)}" size="6"> %</label>
       <label>Guardias <input id="a-ret-guardias" value="${(c.retencionGuardias * 100).toFixed(4)}" size="6"> %</label>
@@ -2852,6 +2989,11 @@ function iniciar(raiz, almacen) {
         c.retencionBase = leerPorcentaje(caja, "#a-ret-base", c.retencionBase);
         c.retencionGuardias = leerPorcentaje(caja, "#a-ret-guardias", c.retencionGuardias);
         c.retribuciones = leerRetribuciones(caja, r);
+        // Si la lista es la de siempre no se guarda: asi quien no la toca
+        // recibe los cambios futuros de la lista por defecto.
+        const lugares = leerLugares(caja.querySelector("#a-lugares").value);
+        if (textoLugares(lugares) === textoLugares(LUGARES)) delete c.lugares;
+        else c.lugares = lugares;
         persistir(); cerrarModal(); pintar();
       }
       else if (b.id === "a-copiar") {
@@ -2931,7 +3073,7 @@ function iniciar(raiz, almacen) {
   }
 
   raiz.addEventListener("click", (ev) => {
-    const b = ev.target.closest("[data-pestana], [data-mes], [data-fecha], [data-festivo], [data-borrar-nomina], [data-editar-nomina], [data-deshacer], [data-reclamar], [data-pend-anadir], [data-pend-descartar], #n-anadir, #b-empezar, #abrir-ajustes, #f-anadir, #marcar-mes");
+    const b = ev.target.closest("[data-pestana], [data-mes], [data-fecha], [data-festivo], [data-borrar-nomina], [data-editar-nomina], [data-deshacer], [data-reclamar], [data-pend-anadir], [data-pend-descartar], #n-anadir, #n-actualizar-tarifas, #descargar-csv, #b-empezar, #abrir-ajustes, #f-anadir, #marcar-mes");
     if (!b) return;
     if (b.id === "abrir-ajustes") abrirAjustes();
     else if (b.id === "b-empezar") {
@@ -2975,6 +3117,18 @@ function iniciar(raiz, almacen) {
       if (/^\d{4}-\d{2}-\d{2}$/.test(fecha) && nombre) {
         estado.festivos[fecha] = { nombre, clase: "sdf" };
         if (!raiz.querySelector("#f-repetir").checked) estado.festivos[fecha].repetir = false;
+        persistir(); pintar();
+      }
+    }
+    else if (b.id === "descargar-csv") descargarCsv();
+    else if (b.id === "n-actualizar-tarifas") {
+      const desfase = tarifasDesfasadas(estado);
+      if (desfase) {
+        // Copia de la tabla vigente (nunca se toca la del anexo), con los
+        // precios de la nomina para ese anio de residencia.
+        const tabla = JSON.parse(JSON.stringify(retribucionesDe(estado.config)));
+        for (const [t, v] of Object.entries(desfase.distintos)) tabla.guardias[desfase.anio][t] = v.nomina;
+        estado.config.retribuciones = tabla;
         persistir(); pintar();
       }
     }

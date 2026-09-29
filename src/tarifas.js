@@ -28,9 +28,16 @@ export function anioResidenciaEn(fechaISO, inicioResidencia) {
   return Math.min(5, Math.max(1, anios + 1));
 }
 
+// `config.preciosNomina` (lo pone nomina.js, no se guarda) trae, por mes, los
+// precios por hora que pago el SAS segun la complementaria de ese mes: si
+// existen y son del mismo anio de residencia, mandan sobre la tabla. Asi los
+// meses ya liquidados se calculan con lo que se pago de verdad aunque el
+// convenio cambie, y las previsiones siguen con la tabla (anexo o Ajustes).
 export function tarifaEn(fechaISO, config) {
   const anio = anioResidenciaEn(fechaISO, config.inicioResidencia);
-  return retribucionesDe(config).guardias[anio];
+  const tabla = retribucionesDe(config).guardias[anio];
+  const delMes = config.preciosNomina && config.preciosNomina[fechaISO.slice(0, 7)];
+  return delMes && delMes.anio === anio ? { ...tabla, ...delMes.precios } : tabla;
 }
 
 export function retribucionFija(anioResidencia, config) {

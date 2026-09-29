@@ -216,3 +216,61 @@ test("diferencias: meses sin calendario o sin desglose no cuentan", () => {
   e.nominas = [nominaPdf("complementaria-2026-08"), { periodo: "2026-06", clase: "guardias", bruto: 484.83, neto: 469.02 }];
   assert.deepEqual(diferenciasConSAS(e).filas, []);
 });
+
+import { tarifasDesfasadas, configConPrecios } from "../src/nomina.js";
+
+test("tarifas: con los precios del anexo no hay aviso", () => {
+  const e = estadoReal();
+  e.nominas = [nominaPdf("complementaria-2026-08")];
+  assert.equal(tarifasDesfasadas(e), null);
+});
+
+test("tarifas: si la nomina paga otro precio, el mes se calcula con el real y se avisa para el resto", () => {
+  const e = estadoReal();
+  const n = nominaPdf("complementaria-2026-08");
+  n.desglose.precios = { laborable: 14.5, sdf: 16.2 }; // como si hubiera subido el convenio
+  e.nominas = [n];
+  const d = tarifasDesfasadas(e);
+  assert.equal(d.periodo, "2026-08");
+  assert.equal(d.anio, 1);
+  assert.deepEqual(d.distintos, { laborable: { nomina: 14.5, app: 14.07 }, sdf: { nomina: 16.2, app: 15.78 } });
+  // Agosto (con nomina) usa los precios reales; julio (sin precios) sigue con la tabla.
+  const agosto = resumenMes("2026-08", e);
+  assert.equal(agosto.importePorTipo.laborable, Math.round(59 * 14.5 * 100) / 100);
+  assert.equal(resumenMes("2026-07", e).importePorTipo.laborable, Math.round(60 * 14.07 * 100) / 100);
+  // Tras actualizar la tabla de R1 (lo que hace el boton), ya no hay aviso.
+  const tabla = JSON.parse(JSON.stringify(configConPrecios(e).retribuciones || { guardias: { 1: { laborable: 14.07, sdf: 15.78, especial: 28.14 } } }));
+  e.config.retribuciones = { sueldoBase: 1379.9, cgFormacion: { 1: 0, 2: 110.38, 3: 248.41, 4: 386.37, 5: 524.38 },
+    guardias: { ...tabla.guardias, 1: { laborable: 14.5, sdf: 16.2, especial: 28.14 } } };
+  assert.equal(tarifasDesfasadas(e), null);
+});
+
+test("tarifas: el precio de una nomina de R1 no se aplica a dias de R2", () => {
+  const e = estadoReal();
+  const n = nominaPdf("complementaria-2026-08");
+  n.periodo = "2027-05"; // mayo 2027: el 27 se pasa a R2
+  n.desglose.precios = { laborable: 99, sdf: 99 };
+  e.nominas = [n];
+  e.guardias = { "2027-05-28": { horas: 17, inicio: "15:00", hecha: true } }; // viernes, ya R2
+  const r = resumenMes("2027-05", e);
+  assert.equal(r.importePorTipo.laborable, Math.round(9 * 15.42 * 100) / 100); // tarifa R2 del anexo, no 99
+});
+
+import { csvAnual } from "../src/nomina.js";
+
+test("CSV anual: formato Excel en espanol y cifras reales de las nominas", () => {
+  const e = estadoReal();
+  e.nominas = [nominaPdf("complementaria-2026-08"), nominaPdf("normal-2026-09")];
+  const csv = csvAnual(2026, e);
+  assert.ok(csv.startsWith("\uFEFFMes;Horas laborables;"));
+  const lineas = csv.trim().split("\r\n");
+  assert.equal(lineas.length, 14); // cabecera + 12 meses + total
+  const agosto = lineas.find((l) => l.startsWith("2026-08;")).split(";");
+  assert.equal(agosto[1], "59");
+  assert.equal(agosto[16], "1681,91"); // bruto real de la complementaria
+  assert.equal(agosto[19], "89,31"); // IRPF
+  assert.equal(agosto[20], "599,30"); // prorrata
+  const septiembre = lineas.find((l) => l.startsWith("2026-09;")).split(";");
+  assert.equal(septiembre[13], "1182,78");
+  assert.ok(lineas[13].startsWith("Total 2026;"));
+});

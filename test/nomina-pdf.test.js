@@ -48,6 +48,7 @@ test("Complementaria de agosto: guardias reales aparte de la prorrata de vacacio
     desglose: {
       liquidacion: { desde: "2026-08-01", hasta: "2026-08-31" },
       horas: { laborable: 59, sdf: 16, especial: 0 },
+      precios: { laborable: 14.07, sdf: 15.78 },
       guardias: 1082.61,
       prorrataVacaciones: 599.30,
       diasVacaciones: 15,

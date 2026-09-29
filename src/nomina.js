@@ -1,7 +1,7 @@
 // src/nomina.js
 import { redondear, mesDe, diaSiguiente } from "./fechas.js";
 import { calcularGuardia } from "./motor.js";
-import { retribucionFija, anioResidenciaEn } from "./tarifas.js";
+import { retribucionFija, anioResidenciaEn, retribucionesDe } from "./tarifas.js";
 
 // La mas reciente, no la media: el IRPF se recalcula cada anio y sube con el anio
 // de residencia, asi que promediar una nomina de R1 con una de R3 da un tipo que no
@@ -127,13 +127,14 @@ export function resumenMes(anioMes, estado) {
 
   const horasPorTipo = { laborable: 0, sdf: 0, especial: 0 };
   const importePorTipo = { laborable: 0, sdf: 0, especial: 0 };
+  const config = configConPrecios(estado);
   let nGuardias = 0;
   let brutoConfirmado = 0;
 
   for (const [fecha, guardia] of Object.entries(estado.guardias)) {
     if (mesDe(fecha) !== anioMes) continue;
     nGuardias += 1;
-    const r = calcularGuardia({ ...guardia, fecha }, estado.festivos, estado.config);
+    const r = calcularGuardia({ ...guardia, fecha }, estado.festivos, config);
     for (const tipo of ["laborable", "sdf", "especial"]) {
       horasPorTipo[tipo] += r.horasPorTipo[tipo];
       importePorTipo[tipo] = redondear(importePorTipo[tipo] + r.importePorTipo[tipo]);
@@ -307,4 +308,82 @@ export function diferenciasConSAS(estado) {
     pagadoDeMas: suma(filas.filter((f) => f.diferencia > 0)),
     saldo: suma(filas),
   };
+}
+
+// Precios por hora de cada complementaria con desglose, por mes liquidado,
+// para que tarifaEn calcule ese mes con lo que pago el SAS de verdad.
+function preciosDeNominas(estado) {
+  const mapa = {};
+  for (const n of estado.nominas) {
+    const p = n.clase === "guardias" && n.desglose && n.desglose.precios;
+    if (!p || typeof p !== "object") continue;
+    const precios = {};
+    for (const t of ["laborable", "sdf", "especial"]) if (Number(p[t]) > 0) precios[t] = Number(p[t]);
+    if (Object.keys(precios).length === 0) continue;
+    mapa[n.periodo] = { anio: anioResidenciaEn(`${n.periodo}-15`, estado.config.inicioResidencia), precios };
+  }
+  return mapa;
+}
+
+export function configConPrecios(estado) {
+  return { ...estado.config, preciosNomina: preciosDeNominas(estado) };
+}
+
+// Compara los precios de la ultima complementaria con la tabla con la que la
+// app hace las previsiones (anexo XVI o lo puesto en Ajustes). Si no
+// coinciden, el convenio ha cambiado (o la tabla esta mal) y las previsiones
+// de los meses siguientes se quedarian desfasadas.
+export function tarifasDesfasadas(estado) {
+  const conPrecios = estado.nominas
+    .filter((n) => n.clase === "guardias" && n.desglose && n.desglose.precios && typeof n.desglose.precios === "object")
+    .sort((a, b) => (a.periodo < b.periodo ? -1 : a.periodo > b.periodo ? 1 : 0));
+  const ultima = conPrecios[conPrecios.length - 1];
+  if (!ultima) return null;
+  const anio = anioResidenciaEn(`${ultima.periodo}-15`, estado.config.inicioResidencia);
+  const tabla = retribucionesDe(estado.config).guardias[anio];
+  const distintos = {};
+  for (const t of ["laborable", "sdf", "especial"]) {
+    const real = Number(ultima.desglose.precios[t]);
+    if (real > 0 && Math.abs(real - tabla[t]) > 0.004) distintos[t] = { nomina: real, app: tabla[t] };
+  }
+  return Object.keys(distintos).length ? { periodo: ultima.periodo, anio, distintos } : null;
+}
+
+// Resumen anual en CSV para Excel en espanol: separador ";", coma decimal y
+// BOM para que abra bien las tildes. Una fila por mes con lo calculado y, si
+// la hay, la nomina real (bruto, neto, cotizacion, IRPF), mas una de totales.
+export function csvAnual(anio, estado) {
+  const r = resumenAnio(anio, estado);
+  const num = (x) => (typeof x === "number" && Number.isFinite(x) ? x.toFixed(2).replace(".", ",") : "");
+  const horas = (x) => String(x).replace(".", ",");
+  const cab = ["Mes", "Horas laborables", "Horas festivas", "Horas festivo especial",
+    "Bruto base", "Paga extra", "Bruto guardias", "Bruto total",
+    "Neto base", "Neto guardias", "Neto total", "Origen del neto",
+    "Nomina base: bruto", "neto", "cotizacion", "IRPF",
+    "Nomina guardias: bruto", "neto", "cotizacion", "IRPF", "prorrata vacaciones"];
+  const filas = [cab];
+  const suma = {};
+  const acumula = (k, v) => { if (typeof v === "number") suma[k] = redondear((suma[k] || 0) + v); };
+  for (const m of r.meses) {
+    const b = nominaDe(estado.nominas, m.anioMes, "base");
+    const g = nominaDe(estado.nominas, m.anioMes, "guardias");
+    const origen = m.netoBaseReal && (m.netoGuardiasReal || m.brutoGuardias === 0) ? "nomina real"
+      : m.netoBaseReal || m.netoGuardiasReal ? "mixto" : "prevision";
+    const fila = [m.anioMes, horas(m.horasPorTipo.laborable), horas(m.horasPorTipo.sdf), horas(m.horasPorTipo.especial),
+      num(m.brutoBase), num(m.pagaExtra), num(m.brutoGuardias), num(m.bruto),
+      num(m.netoBase), num(m.netoGuardias), num(m.neto), origen,
+      num(b?.bruto), num(b?.neto), num(b?.cotizacion), num(b?.irpf),
+      num(g?.bruto), num(g?.neto), num(g?.cotizacion), num(g?.irpf), num(g?.desglose?.prorrataVacaciones)];
+    filas.push(fila);
+    [["bb", m.brutoBase], ["pe", m.pagaExtra], ["bg", m.brutoGuardias], ["bt", m.bruto], ["nb", m.netoBase],
+      ["ng", m.netoGuardias], ["nt", m.neto], ["rbb", b?.bruto], ["rbn", b?.neto], ["rbc", b?.cotizacion],
+      ["rbi", b?.irpf], ["rgb", g?.bruto], ["rgn", g?.neto], ["rgc", g?.cotizacion], ["rgi", g?.irpf],
+      ["rgp", g?.desglose?.prorrataVacaciones]].forEach(([k, v]) => acumula(k, v));
+  }
+  filas.push([`Total ${anio}`, horas(r.horasPorTipo.laborable), horas(r.horasPorTipo.sdf), horas(r.horasPorTipo.especial),
+    num(suma.bb), num(suma.pe), num(suma.bg), num(suma.bt), num(suma.nb), num(suma.ng), num(suma.nt), "",
+    num(suma.rbb), num(suma.rbn), num(suma.rbc), num(suma.rbi), num(suma.rgb), num(suma.rgn), num(suma.rgc),
+    num(suma.rgi), num(suma.rgp)]);
+  const celda = (x) => (/[;"\n]/.test(x) ? `"${x.replace(/"/g, '""')}"` : x);
+  return "\uFEFF" + filas.map((f) => f.map((x) => celda(String(x))).join(";")).join("\r\n") + "\r\n";
 }

@@ -201,6 +201,7 @@ export function parsearNomina(texto) {
     const importes = { laborable: 0, sdf: 0, especial: 0 };
     let prorrata = 0;
     let pagaExtra = 0;
+    const preciosHora = {};
     let horasDesconocidas = false;
     const otros = [];
     for (const d of grupos.devengos) {
@@ -208,6 +209,7 @@ export function parsearNomina(texto) {
       if (c.tipo === "guardia") {
         importes[c.dia] = r2(importes[c.dia] + d.importe);
         const precio = precios[d.clave];
+        if (precio > 0) preciosHora[c.dia] = precio;
         if (precio > 0) horas[c.dia] = r2(horas[c.dia] + d.importe / precio);
         else {
           horasDesconocidas = true;
@@ -249,6 +251,7 @@ export function parsearNomina(texto) {
       // Unas horas a medias (0 donde no se supo el precio) harian que el
       // contraste con el calendario diera una diferencia falsa: o todas o ninguna.
       if (!horasDesconocidas) desglose.horas = horas;
+      if (Object.keys(preciosHora).length) desglose.precios = preciosHora;
       desglose.guardias = brutoGuardias;
     }
     if (prorrata > 0) desglose.prorrataVacaciones = prorrata;

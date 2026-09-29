@@ -1,7 +1,7 @@
 // src/ui.js
 import { diasDelMes, diaSemana, redondear } from "./fechas.js";
 import { sugerenciaPara, calcularGuardia } from "./motor.js";
-import { resumenMes, resumenAnio, tiposEfectivos, historialTipos, ingresoDelMes, contrasteGuardias, nominaDe, diferenciasConSAS } from "./nomina.js";
+import { resumenMes, resumenAnio, tiposEfectivos, historialTipos, ingresoDelMes, contrasteGuardias, nominaDe, diferenciasConSAS, configConPrecios, tarifasDesfasadas, csvAnual } from "./nomina.js";
 import { extraerTextoPdf, parsearNomina } from "./nomina-pdf.js";
 import { cargar, guardar, estadoInicial, importarEstado, mismaData, guardarPrevio, cargarPrevio } from "./estado.js";
 import { cargarRemoto, creaGuardadoRemoto, esMasReciente } from "./persistencia.js";
@@ -29,6 +29,24 @@ const LUGARES = [
   { sigla: "DCP", nombre: "Deccu Castilla del Pino" },
 ];
 const HORAS_TIPO = { laborable: "laborables", sdf: "festivas", especial: "de festivo especial" };
+
+// Los lugares de guardia de cada hospital: por defecto los de arriba, y cada
+// usuario puede poner los suyos en Ajustes (config.lugares). Las guardias
+// guardan solo la sigla, asi que quitar un lugar de la lista no las toca.
+function lugaresDe(config) {
+  const l = config && config.lugares;
+  return Array.isArray(l) && l.every((x) => x && typeof x.sigla === "string" && typeof x.nombre === "string")
+    ? l : LUGARES;
+}
+
+const textoLugares = (lista) => lista.map((l) => `${l.sigla} ${l.nombre}`).join("\n");
+
+function leerLugares(texto) {
+  return texto.split("\n").map((linea) => linea.trim()).filter(Boolean).map((linea) => {
+    const [sigla, ...resto] = linea.split(/\s+/);
+    return { sigla: sigla.slice(0, 8), nombre: resto.join(" ") || sigla };
+  });
+}
 
 const eur = (n) => `${n.toFixed(2).replace(".", ",")} €`;
 
@@ -264,12 +282,12 @@ export function iniciar(raiz, almacen) {
       if (fecha === hoy) clases += " hoy";
       let detalle = "";
       if (g) {
-        const r = calcularGuardia({ ...g, fecha }, estado.festivos, estado.config);
+        const r = calcularGuardia({ ...g, fecha }, estado.festivos, configConPrecios(estado));
         const tipos = [...new Set(r.tramos.map((t) => t.tipo))];
         clases += ` ${tipos[0]}`;
         if (!g.hecha) clases += " prevista";
         detalle = `<span class="horas">${g.horas}h</span>`;
-        if (g.lugar) detalle += `<span class="lugar">${g.lugar}</span>`;
+        if (g.lugar) detalle += `<span class="lugar">${esc(g.lugar)}</span>`;
         if (tipos.length > 1) detalle += `<span class="cruza">cruza</span>`;
       }
       celdas.push(`<button type="button" class="${clases}" data-fecha="${fecha}" aria-label="${fecha}"><span class="num">${num}</span>${detalle}</button>`);
@@ -542,7 +560,15 @@ export function iniciar(raiz, almacen) {
         ? `<br><span class="tenue">${esc(textoDesglose(n))}</span>` : ""}</td><td class="cifra">${eur(n.bruto)} → ${eur(n.neto)}
       <button data-editar-nomina="${i}" aria-label="Editar">✎</button>
       <button class="peligro" data-borrar-nomina="${i}" aria-label="Borrar">×</button></td></tr>`).join("");
-    return `<div class="tarjeta"><strong class="etiqueta">Nóminas registradas</strong>
+    const desfase = tarifasDesfasadas(estado);
+    const TIPO_TARIFA = { laborable: "laborable", sdf: "festiva (S-D-F)", especial: "de festivo especial" };
+    const avisoTarifas = desfase ? `<div class="tarjeta"><strong class="etiqueta">Tarifas de guardia</strong>
+      <p class="aviso">Tu nómina de ${esc(desfase.periodo)} paga ${Object.entries(desfase.distintos)
+        .map(([t, v]) => `la hora ${TIPO_TARIFA[t]} a <strong>${eur(v.nomina)}</strong> (la app prevé con ${eur(v.app)})`)
+        .join(" y ")}. Los meses con nómina ya se calculan con lo pagado; para que las previsiones
+        de los siguientes cuadren, actualiza las tarifas de R${desfase.anio}.</p>
+      <button class="primario" id="n-actualizar-tarifas">Actualizar tarifas de R${desfase.anio}</button></div>` : "";
+    return `${avisoTarifas}<div class="tarjeta"><strong class="etiqueta">Nóminas registradas</strong>
       ${deshacer ? `<p class="aviso">Nómina ${esc(deshacer.nomina.periodo)} ${esc(deshacer.nomina.clase)} borrada.
         <button data-deshacer>Deshacer</button></p>` : ""}
       <table>${filas}</table>
@@ -643,7 +669,22 @@ export function iniciar(raiz, almacen) {
       <tr><td><span class="punto punto-especial"></span>Horas de festivo especial</td><td class="cifra">${r.horasPorTipo.especial}h</td></tr>
       <tr><td>Bruto del año</td><td class="cifra">${eur(r.bruto)}</td></tr>
       <tr><td class="total">Neto del año</td><td class="cifra total">${eur(r.neto)}</td></tr>
-    </table></div>`;
+    </table>
+    <div class="chips" style="margin-top:.9rem"><button id="descargar-csv">Descargar ${anio} para Excel</button></div>
+    <p class="aviso">Un fichero con cada mes: horas, brutos, netos y, si están registradas,
+      las cifras de tus nóminas reales (cotización, IRPF, prorrata).</p></div>`;
+  }
+
+  function descargarCsv() {
+    const anio = Number(mesVisible.slice(0, 4));
+    const blob = new Blob([csvAnual(anio, estado)], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `cuadrante-${anio}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
   }
 
   function abrirModal(fecha) {
@@ -654,7 +695,7 @@ export function iniciar(raiz, almacen) {
     const caja = raiz.querySelector("#caja-modal");
 
     function pintarModal() {
-      const r = calcularGuardia({ ...g, fecha }, estado.festivos, estado.config);
+      const r = calcularGuardia({ ...g, fecha }, estado.festivos, configConPrecios(estado));
       const tramos = r.tramos.map((t) => `<tr><td>${t.fecha} ${t.desde}–${t.hasta}</td>
         <td class="cifra">${t.horas}h × ${eur(t.tarifa)} = ${eur(t.importe)}</td></tr>`).join("");
       caja.innerHTML = `
@@ -663,13 +704,15 @@ export function iniciar(raiz, almacen) {
         <div class="chips">${DURACIONES.map((h) => `<button data-horas="${h}" class="${g.horas === h ? "activo" : ""}">${h}h</button>`).join(" ")}</div>
         <p class="etiqueta-campo">Hora de inicio <input id="m-inicio" value="${g.inicio}" size="5"></p>
         <p class="etiqueta-campo">Lugar</p>
-        <div class="chips">${LUGARES.map((l) => `<button data-lugar="${l.sigla}" class="${g.lugar === l.sigla ? "activo" : ""}">${l.nombre}</button>`).join(" ")}
+        <div class="chips">${[...lugaresDe(estado.config),
+          ...(g.lugar && !lugaresDe(estado.config).some((l) => l.sigla === g.lugar) ? [{ sigla: g.lugar, nombre: g.lugar }] : [])]
+          .map((l) => `<button data-lugar="${esc(l.sigla)}" class="${g.lugar === l.sigla ? "activo" : ""}">${esc(l.nombre)}</button>`).join(" ")}
              <button data-lugar="" class="${g.lugar === "" ? "activo" : ""}">sin especificar</button></div>
         <p><label><input type="checkbox" id="m-hecha" ${g.hecha ? "checked" : ""}> Guardia ya realizada</label></p>
         <table style="margin-top:.75rem">${tramos}
           <tr><td class="total">bruto</td><td class="cifra total">${eur(r.bruto)}</td></tr></table>
         ${(() => {
-          const sas = calcularGuardia({ ...g, fecha }, estado.festivos, { ...estado.config, horarioSAS: true });
+          const sas = calcularGuardia({ ...g, fecha }, estado.festivos, { ...configConPrecios(estado), horarioSAS: true });
           const d = redondear(sas.bruto - r.bruto);
           return d === 0 ? "" : `<p class="aviso">Aquí se calculan las ${g.horas}h que haces. Ojo: el SAS
             suele liquidar estas guardias de 08:00 a 08:00, y con eso pagaría ${eur(Math.abs(d))}
@@ -794,6 +837,11 @@ export function iniciar(raiz, almacen) {
       <p class="aviso">Comprobado con las nóminas de julio y agosto de 2026: el SAS parte
         las guardias a medianoche.</p>
 
+      <p class="etiqueta-campo">Lugares de guardia</p>
+      <textarea id="a-lugares" rows="5" spellcheck="false">${esc(textoLugares(lugaresDe(c)))}</textarea>
+      <p class="aviso">Uno por línea: la sigla y el nombre (por ejemplo «URG Puerta de Urgencias»).
+        Las guardias ya apuntadas conservan su sigla aunque la quites de aquí.</p>
+
       <p class="etiqueta-campo">Retenciones por defecto</p>
       <label>Base <input id="a-ret-base" value="${(c.retencionBase * 100).toFixed(4)}" size="6"> %</label>
       <label>Guardias <input id="a-ret-guardias" value="${(c.retencionGuardias * 100).toFixed(4)}" size="6"> %</label>
@@ -854,6 +902,11 @@ export function iniciar(raiz, almacen) {
         c.retencionBase = leerPorcentaje(caja, "#a-ret-base", c.retencionBase);
         c.retencionGuardias = leerPorcentaje(caja, "#a-ret-guardias", c.retencionGuardias);
         c.retribuciones = leerRetribuciones(caja, r);
+        // Si la lista es la de siempre no se guarda: asi quien no la toca
+        // recibe los cambios futuros de la lista por defecto.
+        const lugares = leerLugares(caja.querySelector("#a-lugares").value);
+        if (textoLugares(lugares) === textoLugares(LUGARES)) delete c.lugares;
+        else c.lugares = lugares;
         persistir(); cerrarModal(); pintar();
       }
       else if (b.id === "a-copiar") {
@@ -933,7 +986,7 @@ export function iniciar(raiz, almacen) {
   }
 
   raiz.addEventListener("click", (ev) => {
-    const b = ev.target.closest("[data-pestana], [data-mes], [data-fecha], [data-festivo], [data-borrar-nomina], [data-editar-nomina], [data-deshacer], [data-reclamar], [data-pend-anadir], [data-pend-descartar], #n-anadir, #b-empezar, #abrir-ajustes, #f-anadir, #marcar-mes");
+    const b = ev.target.closest("[data-pestana], [data-mes], [data-fecha], [data-festivo], [data-borrar-nomina], [data-editar-nomina], [data-deshacer], [data-reclamar], [data-pend-anadir], [data-pend-descartar], #n-anadir, #n-actualizar-tarifas, #descargar-csv, #b-empezar, #abrir-ajustes, #f-anadir, #marcar-mes");
     if (!b) return;
     if (b.id === "abrir-ajustes") abrirAjustes();
     else if (b.id === "b-empezar") {
@@ -977,6 +1030,18 @@ export function iniciar(raiz, almacen) {
       if (/^\d{4}-\d{2}-\d{2}$/.test(fecha) && nombre) {
         estado.festivos[fecha] = { nombre, clase: "sdf" };
         if (!raiz.querySelector("#f-repetir").checked) estado.festivos[fecha].repetir = false;
+        persistir(); pintar();
+      }
+    }
+    else if (b.id === "descargar-csv") descargarCsv();
+    else if (b.id === "n-actualizar-tarifas") {
+      const desfase = tarifasDesfasadas(estado);
+      if (desfase) {
+        // Copia de la tabla vigente (nunca se toca la del anexo), con los
+        // precios de la nomina para ese anio de residencia.
+        const tabla = JSON.parse(JSON.stringify(retribucionesDe(estado.config)));
+        for (const [t, v] of Object.entries(desfase.distintos)) tabla.guardias[desfase.anio][t] = v.nomina;
+        estado.config.retribuciones = tabla;
         persistir(); pintar();
       }
     }
