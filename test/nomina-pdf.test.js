@@ -117,3 +117,23 @@ test("texto con saltos de linea de Windows (CRLF) da el mismo resultado", () => 
     assert.deepEqual(parsearNomina(t.replace(/\n/g, "\r\n")), parsearNomina(t));
   }
 });
+
+test("paga extra: se reconoce como parte de la base, sin aviso de concepto desconocido", () => {
+  const texto = NORMAL_SEP
+    .replace("001\n \nSUELDO\n \n1.379,90", "001\n \nSUELDO\n \n1.379,90\n\n050\n\nPAGA EXTRA\n\n1.379,90")
+    .replace("Total devengos: 1379,90", "Total devengos: 2759,80")
+    .replace("Líquido a percibir:\n \n1182,78", "Líquido a percibir:\n \n2562,68");
+  const { nomina, avisos } = parsearNomina(texto);
+  assert.equal(nomina.clase, "base");
+  assert.equal(nomina.desglose.pagaExtra, 1379.9);
+  assert.deepEqual(avisos, []);
+});
+
+test("nomina 'Extraordinaria' aparte: clase base, sin aviso de tipo desconocido", () => {
+  const texto = NORMAL_SEP.replace("Tip.nóm.emisión:\n \nNormal", "Tip.nóm.emisión:\n \nExtraordinaria")
+    .replace("SUELDO", "PAGA EXTRA DICIEMBRE");
+  const { nomina, avisos } = parsearNomina(texto);
+  assert.equal(nomina.clase, "base");
+  assert.equal(nomina.desglose.pagaExtra, 1379.9);
+  assert.deepEqual(avisos, []);
+});

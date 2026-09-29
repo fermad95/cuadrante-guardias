@@ -1,7 +1,7 @@
 // src/ui.js
 import { diasDelMes, diaSemana, redondear } from "./fechas.js";
 import { sugerenciaPara, calcularGuardia } from "./motor.js";
-import { resumenMes, resumenAnio, tiposEfectivos, historialTipos, ingresoDelMes, contrasteGuardias } from "./nomina.js";
+import { resumenMes, resumenAnio, tiposEfectivos, historialTipos, ingresoDelMes, contrasteGuardias, nominaDe, diferenciasConSAS } from "./nomina.js";
 import { extraerTextoPdf, parsearNomina } from "./nomina-pdf.js";
 import { cargar, guardar, estadoInicial, importarEstado, mismaData, guardarPrevio, cargarPrevio } from "./estado.js";
 import { cargarRemoto, creaGuardadoRemoto, esMasReciente } from "./persistencia.js";
@@ -65,6 +65,8 @@ export function iniciar(raiz, almacen) {
   // uno a uno; no se persisten hasta que el usuario pulsa "Anadir".
   let pendientesNomina = [];
   let estadoPdf = "";
+  // Ultima nomina borrada, para poder deshacerlo durante unos segundos.
+  let deshacer = null; // { nomina, indice, temporizador } | null
 
   raiz.querySelector("#logo-app").src = LOGO_URI;
 
@@ -304,6 +306,7 @@ export function iniciar(raiz, almacen) {
         <strong class="etiqueta">Resumen de ${MESES[mes - 1]}</strong>
         <table>
           <tr><td>Sueldo base</td><td class="cifra">${eur(r.brutoBase)}</td></tr>
+          ${r.pagaExtra > 0 ? `<tr><td>Paga extra <span class="tenue">(${r.netoBaseReal ? "incluida en la nómina real" : "previsión"})</span></td><td class="cifra">${eur(r.pagaExtra)}</td></tr>` : ""}
           ${filaTipo("laborable", r)}${filaTipo("sdf", r)}${filaTipo("especial", r)}
           <tr><td>Bruto total</td><td class="cifra">${eur(r.bruto)}</td></tr>
           <tr><td>Guardias confirmadas</td><td class="cifra">${eur(r.brutoConfirmado)}</td></tr>
@@ -360,6 +363,9 @@ export function iniciar(raiz, almacen) {
         : d > 0
           ? `Te han pagado ${eur(d)} más de lo que sale de tus horas.${causa}`
           : `Las horas no coinciden por tipo aunque el importe sea el mismo.${causa}`;
+    const n = nominaDe(estado.nominas, mesVisible, "guardias");
+    const reclamada = n && typeof n.reclamada === "string"
+      ? ` <strong>Reclamada el ${esc(n.reclamada.split("-").reverse().join("/"))}.</strong>` : "";
     return `<div class="tarjeta">
       <strong class="etiqueta">Liquidado por el SAS</strong>
       <table>${filas}
@@ -368,7 +374,7 @@ export function iniciar(raiz, almacen) {
         ${c.prorrataVacaciones ? `<tr><td>Prorrata de vacaciones${c.diasVacaciones
           ? ` <span class="tenue">(${c.diasVacaciones} días)</span>` : ""}</td><td class="cifra">${eur(c.prorrataVacaciones)}</td></tr>` : ""}
       </table>
-      <p class="aviso">${veredicto}${c.prorrataVacaciones
+      <p class="aviso">${veredicto}${d < 0 && !c.calendarioVacio ? reclamada : ""}${c.prorrataVacaciones
         ? " La prorrata de vacaciones se paga aparte: no es ninguna guardia del calendario." : ""}</p>
     </div>`;
   }
@@ -411,7 +417,7 @@ export function iniciar(raiz, almacen) {
 
   // Comparte las reglas de validacion entre el alta manual y las tarjetas de
   // revision de PDF: un solo sitio donde tocarlas si cambian.
-  function construirNomina({ periodo, clase, bruto, neto, cotizacion, irpf }) {
+  function construirNomina({ periodo, clase, bruto, neto, cotizacion, irpf }, excluir = null) {
     if (!/^\d{4}-\d{2}$/.test(periodo)) {
       return { ok: false, error: "El periodo se escribe como 2026-09." };
     }
@@ -423,11 +429,11 @@ export function iniciar(raiz, almacen) {
     }
     // Una nomina por periodo y clase: subir dos veces el mismo PDF la
     // duplicaria en la lista sin avisar.
-    if (estado.nominas.some((n) => n.periodo === periodo && n.clase === clase)) {
+    if (estado.nominas.some((n) => n !== excluir && n.periodo === periodo && n.clase === clase)) {
       return {
         ok: false,
         error: `Ya tienes registrada la nómina ${clase === "base" ? "base" : "de guardias"} de ${periodo}. `
-          + "Si quieres sustituirla, bórrala antes con la × de la lista.",
+          + "Si quieres cambiarla, usa el botón ✎ de la lista.",
       };
     }
     const nomina = { periodo, clase, bruto: redondear(bruto), neto: redondear(neto) };
@@ -498,7 +504,7 @@ export function iniciar(raiz, almacen) {
       <div class="formulario">
         <input id="pend-cotizacion-${i}" value="${cifra(d.cotizacion)}" size="10">
         <input id="pend-irpf-${i}" value="${cifra(d.irpf)}" size="8">
-        <button class="primario" data-pend-anadir="${i}">Añadir</button>
+        <button class="primario" data-pend-anadir="${i}">${p.editando ? "Guardar" : "Añadir"}</button>
         <button data-pend-descartar="${i}">Descartar</button>
       </div>
       ${p.original?.desglose ? `<p class="tenue">${esc(textoDesglose(p.original))}</p>` : ""}
@@ -519,6 +525,7 @@ export function iniciar(raiz, almacen) {
     if (d.prorrataVacaciones) {
       partes.push(`prorrata de vacaciones ${eur(d.prorrataVacaciones)}${d.diasVacaciones ? ` por ${d.diasVacaciones} días` : ""}`);
     }
+    if (d.pagaExtra) partes.push(`paga extra ${eur(d.pagaExtra)}`);
     if (n.irpf) partes.push(`IRPF ${eur(n.irpf)}`);
     for (const o of d.otros || []) partes.push(`${o.nombre} ${eur(o.importe)}`);
     return partes.join(" · ");
@@ -529,8 +536,11 @@ export function iniciar(raiz, almacen) {
     const filas = estado.nominas.map((n, i) => `
       <tr><td>${esc(n.periodo)} ${esc(n.clase)}${n.desglose
         ? `<br><span class="tenue">${esc(textoDesglose(n))}</span>` : ""}</td><td class="cifra">${eur(n.bruto)} → ${eur(n.neto)}
-      <button class="peligro" data-borrar-nomina="${i}">×</button></td></tr>`).join("");
+      <button data-editar-nomina="${i}" aria-label="Editar">✎</button>
+      <button class="peligro" data-borrar-nomina="${i}" aria-label="Borrar">×</button></td></tr>`).join("");
     return `<div class="tarjeta"><strong class="etiqueta">Nóminas registradas</strong>
+      ${deshacer ? `<p class="aviso">Nómina ${esc(deshacer.nomina.periodo)} ${esc(deshacer.nomina.clase)} borrada.
+        <button data-deshacer>Deshacer</button></p>` : ""}
       <table>${filas}</table>
       ${bloqueRetencion("base", "Base", t.base, t.nBase)}
       ${bloqueRetencion("guardias", "Guardias", t.guardias, t.nGuardias)}
@@ -551,7 +561,35 @@ export function iniciar(raiz, almacen) {
         <input id="n-irpf" placeholder="IRPF €" size="8">
       </div>
       <p class="aviso" id="n-error">Los dos últimos son opcionales, pero si los
-        copias de la nómina puedo separar lo fijo (cotización) de lo que varía (IRPF).</p></div>`;
+        copias de la nómina puedo separar lo fijo (cotización) de lo que varía (IRPF).</p></div>
+      ${vistaDiferencias()}`;
+  }
+
+  // Lo que el SAS ha pagado de mas o de menos respecto a las horas del
+  // calendario, mes a mes, y lo que queda por reclamar.
+  function vistaDiferencias() {
+    const r = diferenciasConSAS(estado);
+    if (r.filas.length === 0) return "";
+    const fecha = (iso) => iso.split("-").reverse().join("/");
+    const filas = r.filas.map((f) => {
+      const horas = Object.entries(f.diferencias)
+        .map(([t, h]) => `${h > 0 ? "+" : ""}${h}h ${HORAS_TIPO[t]}`).join(", ");
+      const accion = f.diferencia < 0
+        ? (f.reclamada
+          ? `<br><span class="tenue">Reclamada el ${esc(fecha(f.reclamada))}</span> <button data-reclamar="${esc(f.periodo)}">Desmarcar</button>`
+          : `<br><button data-reclamar="${esc(f.periodo)}">Marcar como reclamada</button>`)
+        : "";
+      return `<tr><td>${esc(f.periodo)} <span class="tenue">(${esc(horas)})</span>${accion}</td>
+        <td class="cifra">${f.diferencia > 0 ? "+" : ""}${eur(f.diferencia)}</td></tr>`;
+    }).join("");
+    return `<div class="tarjeta"><strong class="etiqueta">Diferencias con el SAS</strong>
+      <table>${filas}
+        <tr><td>Te deben (sin reclamar)</td><td class="cifra">${eur(r.pendienteReclamar)}</td></tr>
+        <tr><td>Te pagaron de más</td><td class="cifra">${eur(r.pagadoDeMas)}</td></tr>
+        <tr><td class="total">Saldo</td><td class="cifra total">${r.saldo > 0 ? "+" : ""}${eur(r.saldo)}</td></tr>
+      </table>
+      <p class="aviso">Negativo: te pagaron menos horas de las que hiciste. Positivo: más.
+        El saldo junta todos los meses; lo que te pagaron de más puede compensar lo que te deben.</p></div>`;
   }
 
   // El tipo de IRPF se regulariza y puede moverse mes a mes. Se enseña la deriva
@@ -891,7 +929,7 @@ export function iniciar(raiz, almacen) {
   }
 
   raiz.addEventListener("click", (ev) => {
-    const b = ev.target.closest("[data-pestana], [data-mes], [data-fecha], [data-festivo], [data-borrar-nomina], [data-pend-anadir], [data-pend-descartar], #n-anadir, #b-empezar, #abrir-ajustes, #f-anadir, #marcar-mes");
+    const b = ev.target.closest("[data-pestana], [data-mes], [data-fecha], [data-festivo], [data-borrar-nomina], [data-editar-nomina], [data-deshacer], [data-reclamar], [data-pend-anadir], [data-pend-descartar], #n-anadir, #b-empezar, #abrir-ajustes, #f-anadir, #marcar-mes");
     if (!b) return;
     if (b.id === "abrir-ajustes") abrirAjustes();
     else if (b.id === "b-empezar") {
@@ -938,7 +976,40 @@ export function iniciar(raiz, almacen) {
       }
     }
     else if (b.dataset.borrarNomina) {
-      estado.nominas.splice(Number(b.dataset.borrarNomina), 1); persistir(); pintar();
+      const indice = Number(b.dataset.borrarNomina);
+      const [nomina] = estado.nominas.splice(indice, 1);
+      if (deshacer) clearTimeout(deshacer.temporizador);
+      deshacer = {
+        nomina, indice,
+        temporizador: setTimeout(() => { deshacer = null; if (pestana === "nominas") pintar(); }, 10000),
+      };
+      persistir(); pintar();
+    }
+    else if ("deshacer" in b.dataset) {
+      if (deshacer) {
+        clearTimeout(deshacer.temporizador);
+        estado.nominas.splice(Math.min(deshacer.indice, estado.nominas.length), 0, deshacer.nomina);
+        deshacer = null;
+        persistir(); pintar();
+      }
+    }
+    else if (b.dataset.editarNomina) {
+      const n = estado.nominas[Number(b.dataset.editarNomina)];
+      if (n && !pendientesNomina.some((p) => p.editando === n)) {
+        pendientesNomina.push({
+          ok: true, nombreArchivo: `Editar ${n.periodo} ${n.clase === "base" ? "base" : "guardias"}`,
+          datos: n, original: n, avisos: [], editando: n,
+        });
+        pintar();
+      }
+    }
+    else if (b.dataset.reclamar) {
+      const n = nominaDe(estado.nominas, b.dataset.reclamar, "guardias");
+      if (n) {
+        if (typeof n.reclamada === "string") delete n.reclamada;
+        else n.reclamada = hoyISO();
+        persistir(); pintar();
+      }
     }
     else if (b.id === "n-anadir") {
       const resultado = construirNomina(leerNomina((campo) => `#n-${campo}`));
@@ -952,18 +1023,48 @@ export function iniciar(raiz, almacen) {
     }
     else if (b.dataset.pendAnadir) {
       const i = Number(b.dataset.pendAnadir);
-      const resultado = construirNomina(leerNomina((campo) => `#pend-${campo}-${i}`));
+      const p = pendientesNomina[i];
+      const campos = leerNomina((campo) => `#pend-${campo}-${i}`);
       const error = raiz.querySelector(`#pend-error-${i}`);
+      const o = p.original;
+      // Paga extra en un PDF aparte (solo trae la paga): se suma a la nomina
+      // base de ese mes en vez de rechazarla como duplicada. No se ha visto
+      // aun una real asi, pero si el SAS la emite separada no se pierde.
+      const baseDelMes = !p.editando && campos.clase === "base" && nominaDe(estado.nominas, campos.periodo, "base");
+      const soloExtra = o?.desglose?.pagaExtra && Math.abs(o.desglose.pagaExtra - o.bruto) <= 0.02
+        && o.bruto === redondear(campos.bruto);
+      if (baseDelMes && soloExtra && !baseDelMes.desglose?.pagaExtra) {
+        const suma = (a, x) => (typeof a === "number" && typeof x === "number" ? redondear(a + x) : undefined);
+        baseDelMes.bruto = redondear(baseDelMes.bruto + o.bruto);
+        baseDelMes.neto = redondear(baseDelMes.neto + o.neto);
+        const cot = suma(baseDelMes.cotizacion, o.cotizacion);
+        const irpf = suma(baseDelMes.irpf, o.irpf);
+        if (cot === undefined || irpf === undefined) { delete baseDelMes.cotizacion; delete baseDelMes.irpf; }
+        else { baseDelMes.cotizacion = cot; baseDelMes.irpf = irpf; }
+        baseDelMes.desglose = { ...(baseDelMes.desglose || {}), pagaExtra: o.desglose.pagaExtra };
+        pendientesNomina.splice(i, 1);
+        persistir(); pintar();
+        return;
+      }
+      const resultado = construirNomina(campos, p.editando || null);
       if (!resultado.ok) {
         error.textContent = resultado.error;
       } else {
         // El desglose leido del PDF solo acompana a la nomina si no se ha
         // cambiado la clase ni el bruto: si se tocan, ya no describe lo guardado.
-        const o = pendientesNomina[i].original;
         if (o?.desglose && o.clase === resultado.nomina.clase && o.bruto === resultado.nomina.bruto) {
           resultado.nomina.desglose = o.desglose;
         }
-        estado.nominas.push(resultado.nomina);
+        if (p.editando) {
+          // La marca de reclamada sigue a la nomina mientras no cambie de mes o clase.
+          if (typeof o.reclamada === "string" && o.periodo === resultado.nomina.periodo
+            && o.clase === resultado.nomina.clase) resultado.nomina.reclamada = o.reclamada;
+          const j = estado.nominas.indexOf(p.editando);
+          if (j >= 0) estado.nominas[j] = resultado.nomina;
+          else estado.nominas.push(resultado.nomina);
+        } else {
+          estado.nominas.push(resultado.nomina);
+        }
         pendientesNomina.splice(i, 1);
         persistir(); pintar();
       }

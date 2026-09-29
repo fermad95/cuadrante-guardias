@@ -45,7 +45,9 @@ export async function extraerTextoPdf(arrayBuffer) {
 // El SAS emite la nómina Normal (sueldo del mes) y la Complementaria
 // (guardias del mes anterior). Si llega otro tipo no se rechaza: la clase se
 // deduce de los conceptos que trae y se avisa en la tarjeta de revisión.
-const CLASE_POR_EMISION = { Normal: "base", Complementaria: "guardias" };
+const CLASE_POR_EMISION = {
+  Normal: "base", Complementaria: "guardias", Extraordinaria: "base", Extra: "base",
+};
 
 const ES_IMPORTE = /^-?\d{1,3}(\.\d{3})*,\d{2}$/;
 const ES_CLAVE = /^\d{3}$/;
@@ -129,6 +131,9 @@ function clasificarDevengo(nombre) {
   if (/^JORN\.?\s*COMPLEMENTARIA$/.test(n)) return { tipo: "guardia", dia: "laborable" };
   if (/^JORN\.?\s*COMPLT\.?\s*SB-?DM-?FE$/.test(n)) return { tipo: "guardia", dia: "sdf" };
   if (/^SUELDO$/.test(n)) return { tipo: "sueldo" };
+  // Paga extraordinaria de junio o diciembre ("PAGA EXTRA", "P.EXTRA JUNIO",
+  // "PAGA EXTRAORDINARIA"...): es parte de la nomina base, no un concepto raro.
+  if (/EXTRA/.test(n) && !/PRORRATA/.test(n)) return { tipo: "extra" };
   return { tipo: "otro" };
 }
 
@@ -195,6 +200,7 @@ export function parsearNomina(texto) {
     const horas = { laborable: 0, sdf: 0, especial: 0 };
     const importes = { laborable: 0, sdf: 0, especial: 0 };
     let prorrata = 0;
+    let pagaExtra = 0;
     let horasDesconocidas = false;
     const otros = [];
     for (const d of grupos.devengos) {
@@ -210,6 +216,8 @@ export function parsearNomina(texto) {
         }
       } else if (c.tipo === "prorrata") {
         prorrata = r2(prorrata + d.importe);
+      } else if (c.tipo === "extra") {
+        pagaExtra = r2(pagaExtra + d.importe);
       } else if (c.tipo === "otro") {
         otros.push({ nombre: d.nombre, importe: d.importe });
         avisos.push(`Concepto que no conozco: "${d.nombre}" (${euros(d.importe)}). `
@@ -244,6 +252,7 @@ export function parsearNomina(texto) {
       desglose.guardias = brutoGuardias;
     }
     if (prorrata > 0) desglose.prorrataVacaciones = prorrata;
+    if (pagaExtra > 0) desglose.pagaExtra = pagaExtra;
     // "Días afectados": las celdas vacías no salen en el texto, así que el
     // número de días solo se asigna si hay uno por código o, si falta alguno,
     // cuando Vacaciones es la primera fila y la nómina trae prorrata de

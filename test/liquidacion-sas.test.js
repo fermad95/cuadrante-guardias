@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { horarioLiquidado } from "../src/motor.js";
-import { resumenMes, contrasteGuardias, ingresoDelMes } from "../src/nomina.js";
+import { resumenMes, resumenAnio, contrasteGuardias, ingresoDelMes } from "../src/nomina.js";
 import { estadoInicial, importarEstado, normalizar } from "../src/estado.js";
 import { parsearNomina } from "../src/nomina-pdf.js";
 
@@ -29,7 +29,7 @@ function estadoReal(extra = {}) {
   const e = estadoInicial();
   e.config.inicioResidencia = "2026-05-27";
   Object.assign(e.config, extra);
-  e.guardias = GUARDIAS;
+  e.guardias = structuredClone(GUARDIAS); // copia: algun test borra guardias
   return e;
 }
 
@@ -162,4 +162,57 @@ test("resumen de un mes con nominas reales: el neto es el de las nominas, no una
   const octubre = resumenMes("2026-10", e);
   assert.equal(octubre.netoBaseReal, false);
   assert.equal(octubre.netoBase, 1182.78);
+});
+
+import { pagaExtraPrevista, diferenciasConSAS } from "../src/nomina.js";
+
+test("paga extra: diciembre completo, junio prorrateado desde el inicio, y R2 cuando toca", () => {
+  const c = { inicioResidencia: "2026-05-27", retribuciones: null };
+  assert.equal(pagaExtraPrevista("2026-12", c), 1379.9);
+  assert.equal(pagaExtraPrevista("2026-06", c), 37.91); // 5 dias de 182
+  assert.equal(pagaExtraPrevista("2027-12", c), 1490.28); // R2: sueldo + CG 110,38
+  assert.equal(pagaExtraPrevista("2026-07", c), 0);
+  assert.equal(pagaExtraPrevista("2026-11", c), 0);
+});
+
+test("resumen de diciembre: la paga extra entra en el bruto y solo retiene IRPF", () => {
+  const e = estadoReal();
+  e.nominas = [nominaPdf("normal-2026-09")]; // IRPF 5,31 %
+  const dic = resumenMes("2026-12", e);
+  const nov = resumenMes("2026-11", e);
+  assert.equal(dic.pagaExtra, 1379.9);
+  assert.equal(dic.bruto, Math.round((nov.bruto + 1379.9) * 100) / 100);
+  // 1379,90 x (1 - 0,0531) = 1306,63: el neto sube eso respecto a noviembre.
+  assert.equal(Math.round((dic.netoBase - nov.netoBase) * 100) / 100, 1306.63);
+});
+
+test("resumen anual: 14 pagas (12 mensualidades + 2 extra)", () => {
+  const e = estadoInicial();
+  e.config.inicioResidencia = "2025-12-01"; // R1 todo 2026 salvo diciembre (R2 desde el 01/12)
+  const r = resumenAnio(2026, e);
+  // 11 meses R1 + diciembre R2 + dos pagas extra de semestres enteros en R1.
+  assert.equal(r.bruto, Math.round((13 * 1379.9 + 1490.28) * 100) / 100);
+});
+
+test("diferencias con el SAS: julio te deben 15,78, agosto 15,78 de mas, saldo 0; marcar reclamada", () => {
+  const e = estadoReal();
+  e.nominas = [nominaPdf("complementaria-2026-07"), nominaPdf("complementaria-2026-08")];
+  let r = diferenciasConSAS(e);
+  assert.deepEqual(r.filas.map((f) => [f.periodo, f.diferencia]), [["2026-07", -15.78], ["2026-08", 15.78]]);
+  assert.equal(r.pendienteReclamar, 15.78);
+  assert.equal(r.pagadoDeMas, 15.78);
+  assert.equal(r.saldo, 0);
+  e.nominas[0].reclamada = "2026-09-29";
+  r = diferenciasConSAS(e);
+  assert.equal(r.pendienteReclamar, 0);
+  assert.equal(r.filas[0].reclamada, "2026-09-29");
+  // La marca sobrevive a la copia de seguridad / sincronizacion.
+  assert.equal(importarEstado(JSON.stringify(e)).estado.nominas[0].reclamada, "2026-09-29");
+});
+
+test("diferencias: meses sin calendario o sin desglose no cuentan", () => {
+  const e = estadoReal();
+  e.guardias = {};
+  e.nominas = [nominaPdf("complementaria-2026-08"), { periodo: "2026-06", clase: "guardias", bruto: 484.83, neto: 469.02 }];
+  assert.deepEqual(diferenciasConSAS(e).filas, []);
 });

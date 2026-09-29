@@ -1,5 +1,5 @@
 // src/nomina.js
-import { redondear, mesDe } from "./fechas.js";
+import { redondear, mesDe, diaSiguiente } from "./fechas.js";
 import { calcularGuardia } from "./motor.js";
 import { retribucionFija, anioResidenciaEn } from "./tarifas.js";
 
@@ -84,6 +84,42 @@ export function mesAnterior(anioMes) {
     : `${a}-${String(m - 1).padStart(2, "0")}`;
 }
 
+// Pagas extraordinarias: 14 pagas al anio (anexo XVI: el total anual del R1
+// es 14 x 1.379,90). Se cobran en junio y diciembre y cada una se devenga en
+// el semestre anterior (junio: 1 dic-31 may; diciembre: 1 jun-30 nov), a
+// razon de una mensualidad (sueldo + CG de formacion) por semestre completo.
+// Si la residencia empezo dentro del semestre, se prorratea por dias; y si
+// el anio de residencia cambia a mitad, cada dia cuenta con el suyo. Es una
+// PREVISION: la regla es la general del SAS, sin confirmar aun con una nomina
+// real de junio o diciembre de este residente.
+export function pagaExtraPrevista(anioMes, config) {
+  const [a, m] = anioMes.split("-").map(Number);
+  if (m !== 6 && m !== 12) return 0;
+  const desde = m === 6 ? `${a - 1}-12-01` : `${a}-06-01`;
+  const hasta = m === 6 ? `${a}-05-31` : `${a}-11-30`;
+  const inicio = config.inicioResidencia;
+  let dias = 0;
+  let suma = 0;
+  for (let d = desde; d <= hasta; d = diaSiguiente(d)) {
+    dias += 1;
+    if (inicio && d < inicio) continue;
+    suma += retribucionFija(anioResidenciaEn(d, inicio), config).mensual;
+  }
+  return redondear(suma / dias);
+}
+
+// IRPF de la ultima nomina base con desglose: la paga extra no cotiza a la
+// Seguridad Social en su mes (va prorrateada en las bases mensuales), solo
+// retiene IRPF. Sin ese dato se usa el tipo total de la base, que es mayor:
+// mejor quedarse corto que prometer de mas.
+function tipoIrpfBase(nominas, config) {
+  const suyas = nominas.filter((n) => n.clase === "base" && n.bruto > 0 && typeof n.irpf === "number");
+  if (suyas.length === 0) return tiposEfectivos(nominas, config).base;
+  let mejor = suyas[0];
+  for (const n of suyas) if (n.periodo >= mejor.periodo) mejor = n;
+  return mejor.irpf / mejor.bruto;
+}
+
 export function resumenMes(anioMes, estado) {
   const tipos = tiposEfectivos(estado.nominas, estado.config);
   const anio = anioResidenciaEn(`${anioMes}-15`, estado.config.inicioResidencia);
@@ -113,14 +149,17 @@ export function resumenMes(anioMes, estado) {
   // horas hechas, y lo que el SAS pago de mas o de menos se ve en el contraste.
   const nominaBase = nominaDe(estado.nominas, anioMes, "base");
   const nominaGuardias = nominaDe(estado.nominas, anioMes, "guardias");
+  const pagaExtra = pagaExtraPrevista(anioMes, estado.config);
   const netoBase = nominaBase
-    ? nominaBase.neto : aplicarRetencion(brutoBase, tipos.base).neto;
+    ? nominaBase.neto
+    : redondear(aplicarRetencion(brutoBase, tipos.base).neto
+      + aplicarRetencion(pagaExtra, tipoIrpfBase(estado.nominas, estado.config)).neto);
   const netoGuardias = nominaGuardias
     ? nominaGuardias.neto : aplicarRetencion(brutoGuardias, tipos.guardias).neto;
 
   return {
     anioMes, nGuardias, horasPorTipo, importePorTipo,
-    brutoBase, brutoGuardias, bruto: redondear(brutoBase + brutoGuardias),
+    brutoBase, pagaExtra, brutoGuardias, bruto: redondear(brutoBase + pagaExtra + brutoGuardias),
     brutoConfirmado,
     // Restado, no sumado aparte: asi las dos partes cuadran siempre con el total
     // aunque los redondeos por tipo y por guardia difieran en algun centimo.
@@ -238,5 +277,34 @@ export function contrasteGuardias(anioMes, estado) {
     porHorarioSAS,
     prorrataVacaciones: Number(n.desglose.prorrataVacaciones) || 0,
     diasVacaciones: n.desglose.diasVacaciones ?? null,
+  };
+}
+
+// Todas las diferencias entre lo que liquido el SAS y las horas del
+// calendario, mes a mes, con el saldo. `reclamada` se guarda en la propia
+// nomina (fecha en que se marco), asi viaja con ella y una version antigua
+// de la app la conserva al sincronizar.
+export function diferenciasConSAS(estado) {
+  const meses = [...new Set(estado.nominas.filter((n) => n.clase === "guardias").map((n) => n.periodo))].sort();
+  const filas = [];
+  for (const periodo of meses) {
+    const c = contrasteGuardias(periodo, estado);
+    if (!c || c.calendarioVacio || c.diferenciaImporte === 0) continue;
+    const n = nominaDe(estado.nominas, periodo, "guardias");
+    filas.push({
+      periodo,
+      diferencia: c.diferenciaImporte,
+      diferencias: c.diferencias,
+      porHorarioSAS: c.porHorarioSAS,
+      reclamada: typeof n.reclamada === "string" ? n.reclamada : null,
+    });
+  }
+  const suma = (lista) => redondear(lista.reduce((s, f) => s + f.diferencia, 0));
+  const aReclamar = filas.filter((f) => f.diferencia < 0 && !f.reclamada);
+  return {
+    filas,
+    pendienteReclamar: redondear(-suma(aReclamar)) || 0, // sin nada pendiente, 0 y no -0
+    pagadoDeMas: suma(filas.filter((f) => f.diferencia > 0)),
+    saldo: suma(filas),
   };
 }
