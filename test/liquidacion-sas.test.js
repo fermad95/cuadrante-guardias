@@ -144,3 +144,22 @@ test("contraste en una cuenta sin guardias apuntadas ese mes: lo dice en vez de 
   const c = contrasteGuardias("2026-08", e);
   assert.equal(c.calendarioVacio, true);
 });
+
+test("resumen de un mes con nominas reales: el neto es el de las nominas, no una prevision", () => {
+  const e = estadoReal();
+  e.nominas = [
+    { periodo: "2026-07", clase: "base", bruto: 1379.9, neto: 1256.05, cotizacion: 123.85, irpf: 0 },
+    nominaPdf("complementaria-2026-07"),
+    nominaPdf("normal-2026-09"), // la mas reciente, ya con IRPF: no debe contaminar julio
+    nominaPdf("complementaria-2026-08"),
+  ];
+  const julio = resumenMes("2026-07", e);
+  assert.equal(julio.netoBase, 1256.05);
+  assert.equal(julio.netoGuardias, 1279.18);
+  assert.equal(julio.neto, 2535.23);
+  assert.equal(julio.netoBaseReal && julio.netoGuardiasReal, true);
+  // Octubre no tiene nominas: sigue siendo prevision con la retencion mas reciente.
+  const octubre = resumenMes("2026-10", e);
+  assert.equal(octubre.netoBaseReal, false);
+  assert.equal(octubre.netoBase, 1182.78);
+});

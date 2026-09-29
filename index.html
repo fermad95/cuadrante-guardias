@@ -869,8 +869,16 @@ function resumenMes(anioMes, estado) {
 
   const brutoGuardias = redondear(
     importePorTipo.laborable + importePorTipo.sdf + importePorTipo.especial);
-  const base = aplicarRetencion(brutoBase, tipos.base);
-  const guardias = aplicarRetencion(brutoGuardias, tipos.guardias);
+  // Si el mes ya tiene nomina real, el neto es el de la nomina, no una
+  // prevision con la retencion de hoy (que puede llevar un IRPF que ese mes
+  // aun no existia). El bruto por tipo sigue saliendo del calendario: son las
+  // horas hechas, y lo que el SAS pago de mas o de menos se ve en el contraste.
+  const nominaBase = nominaDe(estado.nominas, anioMes, "base");
+  const nominaGuardias = nominaDe(estado.nominas, anioMes, "guardias");
+  const netoBase = nominaBase
+    ? nominaBase.neto : aplicarRetencion(brutoBase, tipos.base).neto;
+  const netoGuardias = nominaGuardias
+    ? nominaGuardias.neto : aplicarRetencion(brutoGuardias, tipos.guardias).neto;
 
   return {
     anioMes, nGuardias, horasPorTipo, importePorTipo,
@@ -879,8 +887,9 @@ function resumenMes(anioMes, estado) {
     // Restado, no sumado aparte: asi las dos partes cuadran siempre con el total
     // aunque los redondeos por tipo y por guardia difieran en algun centimo.
     brutoPrevisto: redondear(brutoGuardias - brutoConfirmado),
-    netoBase: base.neto, netoGuardias: guardias.neto,
-    neto: redondear(base.neto + guardias.neto),
+    netoBase, netoGuardias,
+    netoBaseReal: Boolean(nominaBase), netoGuardiasReal: Boolean(nominaGuardias),
+    neto: redondear(netoBase + netoGuardias),
   };
 }
 
@@ -2034,7 +2043,7 @@ function iniciar(raiz, almacen) {
     // cotizacion esta topada: en un mes con bastantes mas guardias que aquella,
     // el descuento real es proporcionalmente menor y el neto sale corto.
     const refGuardias = historialTipos(estado.nominas, "guardias").slice(-1)[0];
-    const netoCorto = refGuardias && r.brutoGuardias > refGuardias.bruto * 1.25;
+    const netoCorto = !r.netoGuardiasReal && refGuardias && r.brutoGuardias > refGuardias.bruto * 1.25;
 
     return `
       <div class="tarjeta">
@@ -2058,8 +2067,8 @@ function iniciar(raiz, almacen) {
           <tr><td>Bruto total</td><td class="cifra">${eur(r.bruto)}</td></tr>
           <tr><td>Guardias confirmadas</td><td class="cifra">${eur(r.brutoConfirmado)}</td></tr>
           <tr><td>Guardias previstas</td><td class="cifra">${eur(r.brutoPrevisto)}</td></tr>
-          <tr><td>Neto de la nómina base</td><td class="cifra">${eur(r.netoBase)}</td></tr>
-          <tr><td>Neto de las guardias</td><td class="cifra">${eur(r.netoGuardias)}</td></tr>
+          <tr><td>Neto de la nómina base${r.netoBaseReal ? ` <span class="tenue">(nómina real)</span>` : ""}</td><td class="cifra">${eur(r.netoBase)}</td></tr>
+          <tr><td>Neto de las guardias${r.netoGuardiasReal ? ` <span class="tenue">(nómina real)</span>` : ""}</td><td class="cifra">${eur(r.netoGuardias)}</td></tr>
           <tr><td class="total">Total neto</td><td class="cifra total">${eur(r.neto)}</td></tr>
         </table>
         ${netoCorto ? `<p class="aviso">El neto de las guardias se calcula con el tipo

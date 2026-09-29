@@ -237,7 +237,7 @@ export function iniciar(raiz, almacen) {
     // cotizacion esta topada: en un mes con bastantes mas guardias que aquella,
     // el descuento real es proporcionalmente menor y el neto sale corto.
     const refGuardias = historialTipos(estado.nominas, "guardias").slice(-1)[0];
-    const netoCorto = refGuardias && r.brutoGuardias > refGuardias.bruto * 1.25;
+    const netoCorto = !r.netoGuardiasReal && refGuardias && r.brutoGuardias > refGuardias.bruto * 1.25;
 
     return `
       <div class="tarjeta">
@@ -261,8 +261,8 @@ export function iniciar(raiz, almacen) {
           <tr><td>Bruto total</td><td class="cifra">${eur(r.bruto)}</td></tr>
           <tr><td>Guardias confirmadas</td><td class="cifra">${eur(r.brutoConfirmado)}</td></tr>
           <tr><td>Guardias previstas</td><td class="cifra">${eur(r.brutoPrevisto)}</td></tr>
-          <tr><td>Neto de la nómina base</td><td class="cifra">${eur(r.netoBase)}</td></tr>
-          <tr><td>Neto de las guardias</td><td class="cifra">${eur(r.netoGuardias)}</td></tr>
+          <tr><td>Neto de la nómina base${r.netoBaseReal ? ` <span class="tenue">(nómina real)</span>` : ""}</td><td class="cifra">${eur(r.netoBase)}</td></tr>
+          <tr><td>Neto de las guardias${r.netoGuardiasReal ? ` <span class="tenue">(nómina real)</span>` : ""}</td><td class="cifra">${eur(r.netoGuardias)}</td></tr>
           <tr><td class="total">Total neto</td><td class="cifra total">${eur(r.neto)}</td></tr>
         </table>
         ${netoCorto ? `<p class="aviso">El neto de las guardias se calcula con el tipo

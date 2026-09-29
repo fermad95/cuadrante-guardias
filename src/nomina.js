@@ -107,8 +107,16 @@ export function resumenMes(anioMes, estado) {
 
   const brutoGuardias = redondear(
     importePorTipo.laborable + importePorTipo.sdf + importePorTipo.especial);
-  const base = aplicarRetencion(brutoBase, tipos.base);
-  const guardias = aplicarRetencion(brutoGuardias, tipos.guardias);
+  // Si el mes ya tiene nomina real, el neto es el de la nomina, no una
+  // prevision con la retencion de hoy (que puede llevar un IRPF que ese mes
+  // aun no existia). El bruto por tipo sigue saliendo del calendario: son las
+  // horas hechas, y lo que el SAS pago de mas o de menos se ve en el contraste.
+  const nominaBase = nominaDe(estado.nominas, anioMes, "base");
+  const nominaGuardias = nominaDe(estado.nominas, anioMes, "guardias");
+  const netoBase = nominaBase
+    ? nominaBase.neto : aplicarRetencion(brutoBase, tipos.base).neto;
+  const netoGuardias = nominaGuardias
+    ? nominaGuardias.neto : aplicarRetencion(brutoGuardias, tipos.guardias).neto;
 
   return {
     anioMes, nGuardias, horasPorTipo, importePorTipo,
@@ -117,8 +125,9 @@ export function resumenMes(anioMes, estado) {
     // Restado, no sumado aparte: asi las dos partes cuadran siempre con el total
     // aunque los redondeos por tipo y por guardia difieran en algun centimo.
     brutoPrevisto: redondear(brutoGuardias - brutoConfirmado),
-    netoBase: base.neto, netoGuardias: guardias.neto,
-    neto: redondear(base.neto + guardias.neto),
+    netoBase, netoGuardias,
+    netoBaseReal: Boolean(nominaBase), netoGuardiasReal: Boolean(nominaGuardias),
+    neto: redondear(netoBase + netoGuardias),
   };
 }
 
