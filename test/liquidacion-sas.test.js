@@ -136,3 +136,11 @@ test("un estado guardado por otro usuario antes de esta version se lee sin cambi
   assert.deepEqual(n.nominas, antiguo.nominas);
   assert.deepEqual(copia, antiguo, "normalizar no muta el dato recibido");
 });
+
+test("contraste en una cuenta sin guardias apuntadas ese mes: lo dice en vez de dar una diferencia falsa", () => {
+  const e = estadoReal();
+  e.guardias = {};
+  e.nominas = [nominaPdf("complementaria-2026-08")];
+  const c = contrasteGuardias("2026-08", e);
+  assert.equal(c.calendarioVacio, true);
+});

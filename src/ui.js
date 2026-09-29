@@ -295,13 +295,15 @@ export function iniciar(raiz, almacen) {
     const filas = ["laborable", "sdf", "especial"]
       .filter((t) => c.liquidadas[t] || c.calculadas[t])
       .map((t) => `<tr><td><span class="punto punto-${t}"></span>Horas ${HORAS_TIPO[t]}</td>
-        <td class="cifra">${c.liquidadas[t]}h · calendario ${c.calculadas[t]}h${c.diferencias[t]
+        <td class="cifra">${c.liquidadas[t]}h · calendario ${c.calculadas[t]}h${c.diferencias[t] && !c.calendarioVacio
           ? ` <span class="salto">${c.diferencias[t] > 0 ? "+" : ""}${c.diferencias[t]}h</span>` : ""}</td></tr>`).join("");
     const d = c.diferenciaImporte;
     const causa = c.porHorarioSAS
       ? " La diferencia sale de que el SAS liquida de 08:00 a 08:00 aunque entres o salgas a las 09:00."
       : " Revisa también que no falte ni sobre ninguna guardia en el calendario.";
-    const veredicto = c.cuadra
+    const veredicto = c.calendarioVacio
+      ? "No tienes guardias apuntadas este mes: apúntalas en el calendario y aquí verás si te han pagado todas las horas."
+      : c.cuadra
       ? "Te han pagado exactamente las horas que hiciste."
       : d < 0
         ? `Te han pagado <strong>${eur(-d)} menos</strong> de lo que hiciste: puedes reclamarlo.${causa}`
@@ -311,7 +313,7 @@ export function iniciar(raiz, almacen) {
     return `<div class="tarjeta">
       <strong class="etiqueta">Liquidado por el SAS</strong>
       <table>${filas}
-        <tr><td>Guardias</td><td class="cifra">${eur(c.importeLiquidado)}${c.diferenciaImporte
+        <tr><td>Guardias</td><td class="cifra">${eur(c.importeLiquidado)}${c.diferenciaImporte && !c.calendarioVacio
           ? ` <span class="salto">${c.diferenciaImporte > 0 ? "+" : ""}${eur(c.diferenciaImporte)}</span>` : ""}</td></tr>
         ${c.prorrataVacaciones ? `<tr><td>Prorrata de vacaciones${c.diasVacaciones
           ? ` <span class="tenue">(${c.diasVacaciones} días)</span>` : ""}</td><td class="cifra">${eur(c.prorrataVacaciones)}</td></tr>` : ""}
@@ -368,6 +370,15 @@ export function iniciar(raiz, almacen) {
     }
     if (neto > bruto) {
       return { ok: false, error: "El neto no puede ser mayor que el bruto." };
+    }
+    // Una nomina por periodo y clase: subir dos veces el mismo PDF la
+    // duplicaria en la lista sin avisar.
+    if (estado.nominas.some((n) => n.periodo === periodo && n.clase === clase)) {
+      return {
+        ok: false,
+        error: `Ya tienes registrada la nómina ${clase === "base" ? "base" : "de guardias"} de ${periodo}. `
+          + "Si quieres sustituirla, bórrala antes con la × de la lista.",
+      };
     }
     const nomina = { periodo, clase, bruto: redondear(bruto), neto: redondear(neto) };
     // Cero es un valor legitimo: hasta la primera regularizacion el IRPF de

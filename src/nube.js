@@ -174,7 +174,9 @@ export function creaGuardadoNube(alCambiarEstado) {
     const contenido = JSON.stringify(datoAGuardar);
     if (contenido === ultimoEnviado) { fijarEstado("al-dia"); return; }
     try {
-      await f.fsMod.setDoc(f.fsMod.doc(f.db, "usuarios", uid), datoAGuardar);
+      // Se envia la version ya serializada, no el objeto vivo: Firestore
+      // rechaza cualquier campo `undefined` y el guardado entero fallaria.
+      await f.fsMod.setDoc(f.fsMod.doc(f.db, "usuarios", uid), JSON.parse(contenido));
       ultimoEnviado = contenido;
       fijarEstado("al-dia");
     } catch {

@@ -220,6 +220,9 @@ export function contrasteGuardias(anioMes, estado) {
     calculadas: r.horasPorTipo,
     diferencias,
     cuadra: Object.keys(diferencias).length === 0,
+    // Sin ninguna guardia apuntada ese mes no hay nada con que comparar: la
+    // diferencia seria la nomina entera y no significa nada.
+    calendarioVacio: r.nGuardias === 0,
     importeLiquidado: liquidado,
     importeCalculado: r.brutoGuardias,
     diferenciaImporte: redondear(liquidado - r.brutoGuardias),
