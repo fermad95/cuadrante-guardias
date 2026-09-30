@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  cargarNube, creaGuardadoNube, iniciarSesion, cerrarSesion, alCambiarSesion, entrarConGoogle,
+  cargarNube, creaSincronizador, escribirNube, iniciarSesion, cerrarSesion, alCambiarSesion, entrarConGoogle,
 } from "../src/nube.js";
 
 test("cargarNube sin SDK disponible devuelve null", async () => {
@@ -32,16 +32,72 @@ test("iniciarSesion sin SDK disponible rechaza con un error claro", async () => 
   await assert.rejects(() => iniciarSesion(), /conexion/);
 });
 
-test("creaGuardadoNube empieza comprobando y pasa a no-disponible sin sesion", async () => {
+test("escribirNube sin SDK disponible no escribe y lo dice", async () => {
+  assert.equal(await escribirNube("uid", { guardias: {} }), false);
+});
+
+const pausa = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test("creaSincronizador: ahora() ejecuta la tarea y refleja el resultado", async () => {
   const cambios = [];
-  const programar = creaGuardadoNube((e) => cambios.push(e));
-  assert.equal(programar.estadoActual, "comprobando");
-  await new Promise((r) => setTimeout(r, 20));
-  assert.equal(programar.estadoActual, "no-disponible");
-  programar({ guardias: {} });
-  assert.equal(programar.estadoActual, "pendiente");
-  await new Promise((r) => setTimeout(r, 2600));
-  assert.equal(programar.estadoActual, "no-disponible");
+  let resultado = "al-dia";
+  const s = creaSincronizador(async () => resultado, (e) => cambios.push(e));
+  assert.equal(s.estadoActual, "comprobando");
+  assert.equal(await s.ahora(), "al-dia");
+  assert.equal(s.estadoActual, "al-dia");
+  resultado = "no-disponible";
+  await s.ahora();
+  assert.equal(s.estadoActual, "no-disponible");
+  assert.deepEqual(cambios, ["al-dia", "no-disponible"]);
+});
+
+test("creaSincronizador: una tarea que lanza cuenta como no disponible", async () => {
+  const s = creaSincronizador(async () => { throw new Error("sin red"); });
+  assert.equal(await s.ahora(), "no-disponible");
+  assert.equal(s.estadoActual, "no-disponible");
+});
+
+test("creaSincronizador: programar espera una pausa y junta varios cambios en una sola tarea", async () => {
+  let veces = 0;
+  const s = creaSincronizador(async () => { veces += 1; return "al-dia"; });
+  s.programar();
+  s.programar();
+  assert.equal(s.estadoActual, "pendiente");
+  await pausa(300);
+  assert.equal(veces, 0, "no sincroniza en cada cambio");
+  await pausa(2400);
+  assert.equal(veces, 1);
+  assert.equal(s.estadoActual, "al-dia");
+});
+
+test("creaSincronizador: nunca corren dos tareas a la vez, y lo pedido durante una se repite al acabar", async () => {
+  let enMarcha = 0;
+  let maximo = 0;
+  let veces = 0;
+  const s = creaSincronizador(async () => {
+    enMarcha += 1; maximo = Math.max(maximo, enMarcha); veces += 1;
+    await pausa(40);
+    enMarcha -= 1;
+    return "al-dia";
+  });
+  const a = s.ahora();
+  const b = s.ahora();
+  assert.equal(a, b, "la segunda peticion se une a la que esta en curso");
+  await a;
+  assert.equal(maximo, 1);
+  assert.equal(veces, 2);
+});
+
+test("creaSincronizador: un cambio hecho durante una tarea sigue pendiente al acabar", async () => {
+  let veces = 0;
+  const s = creaSincronizador(async () => { veces += 1; await pausa(40); return "al-dia"; });
+  const a = s.ahora();
+  s.programar();
+  await a;
+  assert.equal(s.estadoActual, "pendiente");
+  await pausa(2600);
+  assert.equal(veces, 2);
+  assert.equal(s.estadoActual, "al-dia");
 });
 
 // El login con Google. En el iPhone con la app en la pantalla de inicio la

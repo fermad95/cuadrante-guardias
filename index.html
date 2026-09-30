@@ -625,15 +625,32 @@ const FIJOS_NACIONALES = [
   ["12-25", "Navidad"],
 ];
 
+// Andalucia traslada al lunes siguiente los festivos de fecha fija que caen
+// en domingo (lo fija el decreto del calendario de fiestas laborales de cada
+// anio: en 2026, Todos los Santos al 2 de noviembre y la Constitucion al 7 de
+// diciembre; en 2027, el Dia de Andalucia al 1 de marzo y la Asuncion al 16
+// de agosto). Ese lunes no se trabaja: la guardia del domingo sale a las
+// 09:00 y la del lunes se paga como festiva. Si un anio el decreto no
+// trasladara alguno, se desmarca en la pestana Festivos.
 function festivosDerivados(anio) {
   const mapa = {};
+  const fijos = [];
   for (const [diaMes, nombre] of FIJOS_NACIONALES) {
     mapa[`${anio}-${diaMes}`] = { nombre, ambito: "nacional", clase: "sdf" };
+    fijos.push(`${anio}-${diaMes}`);
   }
   const pascua = domingoDePascua(anio);
   mapa[desplazar(pascua, -2)] = { nombre: "Viernes Santo", ambito: "nacional", clase: "sdf" };
   mapa[`${anio}-02-28`] = { nombre: "Día de Andalucía", ambito: "autonomico", clase: "sdf" };
+  fijos.push(`${anio}-02-28`);
   mapa[desplazar(pascua, -3)] = { nombre: "Jueves Santo", ambito: "autonomico", clase: "sdf" };
+  for (const fecha of fijos) {
+    if (diaSemana(fecha) !== 0) continue;
+    const lunes = desplazar(fecha, 1);
+    if (!mapa[lunes]) {
+      mapa[lunes] = { nombre: `${mapa[fecha].nombre} (trasladado del domingo)`, ambito: mapa[fecha].ambito, clase: "sdf", trasladado: true };
+    }
+  }
   return mapa;
 }
 
@@ -931,10 +948,25 @@ function tipoIrpfBase(nominas, config) {
   return mejor.irpf / mejor.bruto;
 }
 
+// Parte del mes que cae dentro de la residencia: 0 en los meses anteriores al
+// inicio, la fraccion de dias en el mes en que se empieza y 1 despues. Sin
+// esto, el resumen anual sumaba un sueldo entero por cada mes anterior a
+// empezar. El prorrateo del primer mes es por dias naturales: una
+// aproximacion, que la nomina real de ese mes sustituye si se registra.
+function fraccionDeResidencia(anioMes, inicioResidencia) {
+  if (!inicioResidencia) return 1;
+  const dias = diasDelMes(anioMes);
+  const dentro = dias.filter((d) => d >= inicioResidencia).length;
+  return dentro / dias.length;
+}
+
 function resumenMes(anioMes, estado) {
   const tipos = tiposEfectivos(estado.nominas, estado.config);
-  const anio = anioResidenciaEn(`${anioMes}-15`, estado.config.inicioResidencia);
-  const brutoBase = retribucionFija(anio, estado.config).mensual;
+  const inicio = estado.config.inicioResidencia;
+  // El anio de residencia del mes es el del dia 15, salvo en el mes en que
+  // se empieza, que es R1 aunque el inicio caiga despues del 15.
+  const anio = anioResidenciaEn(inicio && inicio.slice(0, 7) === anioMes ? inicio : `${anioMes}-15`, inicio);
+  const brutoBase = redondear(retribucionFija(anio, estado.config).mensual * fraccionDeResidencia(anioMes, inicio));
 
   const horasPorTipo = { laborable: 0, sdf: 0, especial: 0 };
   const importePorTipo = { laborable: 0, sdf: 0, especial: 0 };
@@ -1560,6 +1592,41 @@ function festivoValido(fecha, f) {
     && (f.nombre === undefined || typeof f.nombre === "string");
 }
 
+const esImporte = (x) => typeof x === "number" && Number.isFinite(x) && x > 0;
+
+function retribucionesValidas(r) {
+  if (!r || typeof r !== "object" || !r.guardias || !r.cgFormacion || !esImporte(r.sueldoBase)) return false;
+  return [1, 2, 3, 4, 5].every((n) => {
+    const g = r.guardias[n];
+    return g && typeof g === "object" && CLASES_FESTIVO.every((t) => esImporte(g[t]))
+      && typeof r.cgFormacion[n] === "number" && Number.isFinite(r.cgFormacion[n]) && r.cgFormacion[n] >= 0;
+  });
+}
+
+// Deja la configuracion en un estado con el que la app puede calcular y
+// pintar: lo que no tiene la forma esperada vuelve a su valor por defecto.
+// Una tabla de tarifas rota, por ejemplo, dejaba la app en blanco al abrir.
+function sanearConfig(config) {
+  const inicial = estadoInicial().config;
+  const c = { ...inicial, ...(config && typeof config === "object" ? config : {}) };
+  if (c.inicioResidencia != null && !(typeof c.inicioResidencia === "string" && ES_FECHA.test(c.inicioResidencia))) {
+    c.inicioResidencia = null;
+  }
+  for (const k of ["cortarAMedianoche", "especialCortaAMedianoche"]) {
+    if (typeof c[k] !== "boolean") c[k] = inicial[k];
+  }
+  for (const k of ["retencionBase", "retencionGuardias"]) {
+    if (!(typeof c[k] === "number" && c[k] >= 0 && c[k] < 1)) c[k] = inicial[k];
+  }
+  if (c.retribuciones !== null && !retribucionesValidas(c.retribuciones)) c.retribuciones = null;
+  if ("lugares" in c && !(Array.isArray(c.lugares)
+      && c.lugares.every((l) => l && typeof l.sigla === "string" && typeof l.nombre === "string"))) {
+    delete c.lugares;
+  }
+  if (c.tema !== "sobrio" && c.tema !== "espacial") c.tema = inicial.tema;
+  return c;
+}
+
 // Importa una copia de seguridad pegada a mano. Descarta lo que no sea valido en
 // vez de rechazar el lote entero: una copia casi buena sigue sirviendo, y se
 // informa de cuantas entradas se han caido. El tema no se importa a proposito:
@@ -1595,14 +1662,11 @@ function importarEstado(texto) {
     else descartadas += 1;
   }
 
-  const config = { ...inicial.config, ...(base.config || {}) };
-  delete config.tema;
   // Una fecha de inicio con formato raro romperia el calculo del anio de
-  // residencia (NaN silencioso en las tarifas): si no es una fecha valida,
-  // se descarta y se vuelve a preguntar.
-  if (config.inicioResidencia != null && !ES_FECHA.test(config.inicioResidencia)) {
-    config.inicioResidencia = null;
-  }
+  // residencia (NaN silencioso en las tarifas), y una tabla de tarifas rota,
+  // todos los calculos: lo que no vale vuelve a su valor por defecto.
+  const config = sanearConfig(base.config);
+  delete config.tema;
 
   const festivos = {};
   for (const [fecha, f] of Object.entries(base.festivos || {})) {
@@ -1666,12 +1730,20 @@ function mismaData(a, b) {
 // Rellena con el estado inicial las claves que falten en un dato guardado o
 // recibido: asi quien no toca una preferencia sigue recibiendo las mejoras
 // futuras del codigo en vez de congelar una copia incompleta.
+// Tambien descarta lo que no tenga la forma esperada (una guardia sin horas,
+// una nomina sin bruto, una tabla de tarifas rota): un dato estropeado en el
+// almacenamiento del navegador no puede dejar la app en blanco al abrir.
 function normalizar(dato) {
   const inicial = estadoInicial();
+  const mapa = (x) => (x && typeof x === "object" && !Array.isArray(x) ? x : {});
   return {
     ...inicial,
     ...dato,
-    config: { ...inicial.config, ...(dato.config || {}) },
+    config: sanearConfig(dato.config),
+    guardias: Object.fromEntries(Object.entries(mapa(dato.guardias)).filter(([f, g]) => guardiaValida(f, g))),
+    festivos: Object.fromEntries(Object.entries(mapa(dato.festivos)).filter(([f, x]) => festivoValido(f, x))),
+    nominas: (Array.isArray(dato.nominas) ? dato.nominas : []).filter(nominaValida),
+    actualizadoEn: Number(dato.actualizadoEn) || 0,
   };
 }
 
@@ -1679,11 +1751,171 @@ function cargar(almacen) {
   const guardado = leerJSON(almacen, CLAVE);
   if (guardado) return normalizar(guardado);
   const v5 = leerJSON(almacen, CLAVE_V5);
-  return v5 ? migrarV5(v5) : estadoInicial();
+  return v5 ? normalizar(migrarV5(v5)) : estadoInicial();
 }
 
 function guardar(almacen, estado) {
   almacen.setItem(CLAVE, JSON.stringify(estado));
+}
+
+// src/fusion.js
+//
+// Sincronizar sin perder nada. Antes la regla era "gana la copia entera mas
+// reciente", y eso pierde datos en cuanto dos dispositivos cambian cosas
+// distintas: el movil que se quedo abierto con datos de ayer sube una guardia
+// y borra de la nube las nominas que se subieron hoy desde el ordenador; o un
+// movil nuevo, recien puesta la fecha de inicio, pisa la nube entera con una
+// copia casi vacia por tener la marca de tiempo mas alta.
+//
+// Aqui se fusiona dato a dato (cada guardia, cada festivo, cada nomina, cada
+// ajuste) comparando tres copias: la `base` (lo ultimo que este dispositivo
+// supo que habia en la nube de esa cuenta), la local y la remota. Lo que solo
+// ha cambiado en un lado, se respeta; lo que no ha cambiado nadie, se queda;
+// y solo si el MISMO dato ha cambiado en los dos lados de forma distinta
+// manda la copia mas reciente. Sin base (primera vez en este dispositivo) se
+// parte de cero: todo se suma y nada se borra.
+
+const canonico = (x) => (Array.isArray(x) ? x.map(canonico)
+  : x && typeof x === "object"
+    ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, canonico(x[k])]))
+    : x);
+
+// Texto comparable de un valor, sin depender del orden de sus claves (dos
+// dispositivos pueden guardar lo mismo en distinto orden). Lo ausente es "".
+const huella = (x) => (x === undefined ? "" : JSON.stringify(canonico(x)));
+
+const esObjeto = (x) => Boolean(x) && typeof x === "object" && !Array.isArray(x);
+
+function nominasPorClave(lista) {
+  const mapa = {};
+  for (const n of Array.isArray(lista) ? lista : []) {
+    if (esObjeto(n)) mapa[`${n.periodo}|${n.clase}`] = n;
+  }
+  return mapa;
+}
+
+// Solo los datos del usuario: sin el tema (es de cada dispositivo) ni la
+// marca de tiempo, y con las nominas por periodo y clase en vez de en lista.
+function datosDe(e) {
+  const { tema, ...config } = (e && esObjeto(e.config) && e.config) || {};
+  return {
+    config,
+    guardias: (e && esObjeto(e.guardias) && e.guardias) || {},
+    festivos: (e && esObjeto(e.festivos) && e.festivos) || {},
+    nominas: nominasPorClave(e && e.nominas),
+  };
+}
+
+function mismosDatos(a, b) {
+  return huella(datosDe(a)) === huella(datosDe(b));
+}
+
+// Una copia recien estrenada (sin fecha de inicio ni nada apuntado) no tiene
+// nada que merezca subirse a una nube vacia.
+function tieneContenido(e) {
+  const d = datosDe(e);
+  return Boolean(d.config.inicioResidencia)
+    || [d.guardias, d.festivos, d.nominas].some((m) => Object.keys(m).length > 0);
+}
+
+function fusionarMapa(b, l, r, ganaLocal, cuenta) {
+  const res = {};
+  // Primero las claves locales: asi las nominas conservan el orden en que
+  // las ve este dispositivo y las que llegan de fuera van al final.
+  for (const k of new Set([...Object.keys(l), ...Object.keys(r), ...Object.keys(b)])) {
+    const hb = huella(b[k]);
+    const hl = huella(l[k]);
+    const hr = huella(r[k]);
+    let v;
+    if (hl === hr || hr === hb) v = l[k];       // iguales, o solo ha cambiado el local
+    else if (hl === hb) v = r[k];               // solo ha cambiado el remoto
+    else {
+      // Cambiado en los dos lados de forma distinta: manda la copia mas
+      // reciente, salvo que lo suyo sea haberlo borrado; antes que perder un
+      // dato que el otro lado ha tocado, se conserva.
+      const preferido = ganaLocal ? l[k] : r[k];
+      v = preferido !== undefined ? preferido : (ganaLocal ? r[k] : l[k]);
+      if (huella(v) !== hl) cuenta.perdidasLocales += 1;
+    }
+    if (v !== undefined) res[k] = v;
+  }
+  return res;
+}
+
+// Devuelve { estado, perdidasLocales }: el estado fusionado (sin tema ni
+// marca de tiempo, que pone quien llama) y cuantos datos cambiados en este
+// dispositivo han cedido ante un cambio mas reciente de otro.
+function fusionarEstados(base, local, remoto) {
+  const b = base ? datosDe(base) : { ...datosDe(estadoInicial()), guardias: {}, festivos: {}, nominas: {} };
+  const l = datosDe(local);
+  const r = datosDe(remoto);
+  const ganaLocal = ((local && local.actualizadoEn) || 0) >= ((remoto && remoto.actualizadoEn) || 0);
+  const cuenta = { perdidasLocales: 0 };
+  const estado = {
+    version: 6,
+    config: fusionarMapa(b.config, l.config, r.config, ganaLocal, cuenta),
+    guardias: fusionarMapa(b.guardias, l.guardias, r.guardias, ganaLocal, cuenta),
+    festivos: fusionarMapa(b.festivos, l.festivos, r.festivos, ganaLocal, cuenta),
+    nominas: Object.values(fusionarMapa(b.nominas, l.nominas, r.nominas, ganaLocal, cuenta)),
+  };
+  return { estado, perdidasLocales: cuenta.perdidasLocales };
+}
+
+// Que hay que hacer al comparar la copia local con la de la nube:
+//   "nada"     ya dicen lo mismo
+//   "subir"    la nube va por detras: se sube la local tal cual
+//   "adoptar"  el local va por detras: pasa a ser `estado` (no hay que subir)
+//   "fusionar" las dos tenian cambios: `estado` es la mezcla, y hay que subirla
+// `remoto` null es una cuenta sin nada en la nube.
+//
+// `copiaDeLaCuenta`: la copia local ya era de esta cuenta antes de existir la
+// base (dispositivo que viene de una version anterior de la app). Si ademas la
+// nube es mas reciente, lo normal es que este dispositivo simplemente lleve
+// dias sin abrirse: se toma lo local como base, y asi lo que se borro desde
+// otro dispositivo no reaparece al sumar las dos copias. Es lo que hacia la
+// regla anterior ("gana la mas reciente") en ese mismo caso.
+function planSincronizacion({ base, local, remoto, ahora, copiaDeLaCuenta = false }) {
+  if (!remoto) return { accion: tieneContenido(local) ? "subir" : "nada", perdidasLocales: 0 };
+  if (!base && copiaDeLaCuenta && (remoto.actualizadoEn || 0) > ((local && local.actualizadoEn) || 0)) base = local;
+  const f = fusionarEstados(base, local, remoto);
+  const igualLocal = mismosDatos(f.estado, local);
+  const igualRemoto = mismosDatos(f.estado, remoto);
+  if (igualLocal && igualRemoto) return { accion: "nada", perdidasLocales: 0 };
+  if (igualLocal) return { accion: "subir", perdidasLocales: 0 };
+  if (igualRemoto) {
+    return {
+      accion: "adoptar",
+      estado: { ...f.estado, actualizadoEn: remoto.actualizadoEn || 0 },
+      perdidasLocales: f.perdidasLocales,
+    };
+  }
+  return {
+    accion: "fusionar",
+    estado: { ...f.estado, actualizadoEn: ahora },
+    perdidasLocales: f.perdidasLocales,
+  };
+}
+
+// La base: lo ultimo que este dispositivo supo que habia en la nube de cada
+// cuenta. Vive solo aqui (no viaja a la nube). Si no se puede leer o guardar
+// (almacenamiento lleno o bloqueado), se sincroniza como la primera vez.
+const claveBase = (clave, uid) => `${clave}_base_${uid}`;
+
+function leerBase(almacen, clave, uid) {
+  try {
+    const crudo = almacen.getItem(claveBase(clave, uid));
+    const dato = crudo ? JSON.parse(crudo) : null;
+    return esObjeto(dato) ? dato : null;
+  } catch {
+    return null;
+  }
+}
+
+function guardarBase(almacen, clave, uid, dato) {
+  try {
+    if (dato) almacen.setItem(claveBase(clave, uid), JSON.stringify(dato));
+    else almacen.removeItem(claveBase(clave, uid));
+  } catch { /* sin espacio: la proxima vez se fusiona sin base, que no pierde nada */ }
 }
 
 // src/persistencia.js
@@ -1897,26 +2129,41 @@ const CONFIG = {
 
 let sdkPromesa = null;
 
+// Si la carga falla (sin red), no se memoriza el fallo: la siguiente llamada
+// vuelve a intentarlo. Antes el primer fallo se quedaba para toda la sesion,
+// y una app abierta sin cobertura no volvia a sincronizar hasta recargarla.
 function cargarSDK() {
   if (!sdkPromesa) {
-    sdkPromesa = Promise.all([
+    const intento = Promise.all([
       import(`${CDN}/firebase-app.js`),
       import(`${CDN}/firebase-auth.js`),
       import(`${CDN}/firebase-firestore.js`),
     ]).then(([appMod, authMod, fsMod]) => {
       const app = appMod.initializeApp(CONFIG);
       return { auth: authMod.getAuth(app), db: fsMod.getFirestore(app), authMod, fsMod };
-    }).catch(() => null);
+    }).catch(() => {
+      if (sdkPromesa === intento) sdkPromesa = null;
+      return null;
+    });
+    sdkPromesa = intento;
   }
   return sdkPromesa;
 }
 
 // Llama a `fn(usuario | null)` cada vez que cambia la sesion. `usuario` es
 // `{ uid, nombre, correo, foto }` o `null` si no hay sesion. Si el SDK no
-// carga (sin red), se llama una vez con null y ya esta.
+// carga (sin red), se llama una vez con null y se vuelve a intentar cuando
+// vuelve la conexion o la app vuelve a primer plano.
 function alCambiarSesion(fn, alErrorRedireccion) {
-  cargarSDK().then((f) => {
-    if (!f) { fn(null); return; }
+  let suscrito = false;
+  let avisadoSinSDK = false;
+  const intentar = () => cargarSDK().then((f) => {
+    if (suscrito) return;
+    if (!f) {
+      if (!avisadoSinSDK) { avisadoSinSDK = true; fn(null); }
+      return;
+    }
+    suscrito = true;
     f.authMod.onAuthStateChanged(f.auth, (u) => {
       fn(u ? { uid: u.uid, nombre: u.displayName, correo: u.email, foto: u.photoURL } : null);
     });
@@ -1929,6 +2176,13 @@ function alCambiarSesion(fn, alErrorRedireccion) {
       if (typeof alErrorRedireccion === "function") alErrorRedireccion(err);
     });
   });
+  intentar();
+  if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+    window.addEventListener("online", intentar);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") intentar();
+    });
+  }
 }
 
 // El login va siempre por popup, tambien con la app anadida a la pantalla de
@@ -1996,23 +2250,36 @@ async function leerNube() {
   }
 }
 
-// `esMasReciente` (la logica de "gana quien sea mas reciente") se reutiliza
-// de persistencia.js: es la misma funcion pura, y por el mismo motivo de
-// arriba no puede haber una segunda declaracion con el mismo nombre aqui.
+// Escribe el estado en la nube de `uid`, y solo si la sesion sigue siendo la
+// de esa cuenta: si ha cambiado mientras tanto, no se escribe nada (los datos
+// de una cuenta nunca van a la nube de otra). Devuelve si se ha escrito.
+async function escribirNube(uid, dato) {
+  const act = await uidActual();
+  if (!act || act.uid !== uid) return false;
+  try {
+    // Se envia una copia ya serializada, no el objeto vivo: Firestore rechaza
+    // cualquier campo `undefined` y el guardado entero fallaria.
+    await act.f.fsMod.setDoc(act.f.fsMod.doc(act.f.db, "usuarios", uid), JSON.parse(JSON.stringify(dato)));
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-// Debounced + envio inmediato al ocultar la pestana, igual que el guardado
-// en el Artifact. `alCambiarEstado(estado)` recibe "comprobando" / "al-dia" /
-// "pendiente" / "no-disponible" (no-disponible tambien cuando no hay sesion).
-// `cuentaPermitida()` (opcional) devuelve el uid de la cuenta duena de los
-// datos locales: si hay una y la sesion es otra, no se escribe nada. Evita
-// que un guardado pendiente de una cuenta acabe en la nube de otra al
-// cambiar de cuenta en el mismo dispositivo.
-function creaGuardadoNube(alCambiarEstado, cuentaPermitida) {
+// Decide CUANDO se sincroniza; el COMO lo pone `tarea` (ui.js), que lee la
+// nube, fusiona y escribe, y devuelve "al-dia" o "no-disponible".
+//   programar()  tras cada cambio: espera una pausa (no se sincroniza en cada
+//                tecla), pero si la pestana se oculta o se cierra antes, va ya
+//   ahora()      sin esperar (al iniciar sesion, al volver a primer plano, al
+//                recuperar la conexion); devuelve una promesa con el resultado
+// Nunca corren dos a la vez: si se pide otra durante una, se repite al acabar.
+// `estadoActual`: "comprobando" / "al-dia" / "pendiente" / "no-disponible".
+function creaSincronizador(tarea, alCambiarEstado) {
   let temporizador = null;
-  let ultimoEnviado = null;
-  let ultimoUid = null;
-  let pendiente = null;
   let estado = "comprobando";
+  let pendiente = false; // hay cambios locales esperando a la pausa
+  let enCurso = null;
+  let otraVez = false;
 
   function fijarEstado(nuevo) {
     if (nuevo === estado) return;
@@ -2020,79 +2287,40 @@ function creaGuardadoNube(alCambiarEstado, cuentaPermitida) {
     if (typeof alCambiarEstado === "function") alCambiarEstado(estado);
   }
 
-  // Si al arrancar ya hay sesion (usuario que volvio), que el aviso empiece
-  // en "al dia" (nada pendiente) en vez de quedarse en "no disponible" hasta
-  // el primer cambio, que seria enganoso teniendo sesion. Ojo: dos intentos
-  // anteriores (mirar `currentUser` justo tras cargar el SDK, y despues
-  // esperar a un solo `onAuthStateChanged`/`authStateReady()`) seguian
-  // dejando el aviso encasquillado en "no disponible" — verificado en vivo
-  // las dos veces: la sesion persistida puede tardar en resolverse mas de lo
-  // que cualquiera de esas señales garantiza, y cualquier comprobacion de
-  // "una sola vez" puede caer justo antes de que se resuelva. La solucion no
-  // es afinar CUANDO se comprueba, sino no fiarse nunca de un "no hay
-  // sesion" que salga de aqui: este listener se queda escuchando
-  // indefinidamente (no una vez) y solo corrige el aviso hacia "al dia" en
-  // cuanto aparece un usuario real, aunque sea tarde. El "no disponible" por
-  // ausencia de sesion solo se declara tras un plazo de gracia sin que
-  // aparezca nadie — y si la sesion llega despues de todos modos, este mismo
-  // listener lo corrige.
-  cargarSDK().then((f) => {
-    if (!f) { if (estado === "comprobando") fijarEstado("no-disponible"); return; }
-    f.authMod.onAuthStateChanged(f.auth, (u) => {
-      if (u && (estado === "comprobando" || estado === "no-disponible")) fijarEstado("al-dia");
-    });
-    setTimeout(() => {
-      if (estado === "comprobando") fijarEstado("no-disponible");
-    }, 8000);
-  });
-
-  async function enviar(datoAGuardar) {
-    const act = await uidActual();
-    if (!act) { fijarEstado("no-disponible"); return; }
-    const { f, uid } = act;
-    const duena = typeof cuentaPermitida === "function" ? cuentaPermitida() : null;
-    if (duena && duena !== uid) { fijarEstado("no-disponible"); return; }
-    // Si ha cambiado de cuenta (cerrar sesion + entrar con otra Google
-    // distinta) sin que el estado local haya cambiado, no hay que confiar
-    // en el "ya esta enviado" de la cuenta anterior.
-    if (uid !== ultimoUid) { ultimoEnviado = null; ultimoUid = uid; }
-    const contenido = JSON.stringify(datoAGuardar);
-    if (contenido === ultimoEnviado) { fijarEstado("al-dia"); return; }
-    try {
-      // Se envia la version ya serializada, no el objeto vivo: Firestore
-      // rechaza cualquier campo `undefined` y el guardado entero fallaria.
-      await f.fsMod.setDoc(f.fsMod.doc(f.db, "usuarios", uid), JSON.parse(contenido));
-      ultimoEnviado = contenido;
-      fijarEstado("al-dia");
-    } catch {
-      fijarEstado("no-disponible");
-    }
+  function ahora() {
+    if (enCurso) { otraVez = true; return enCurso; }
+    clearTimeout(temporizador);
+    pendiente = false;
+    enCurso = (async () => {
+      let resultado;
+      do {
+        otraVez = false;
+        try { resultado = await tarea(); } catch { resultado = "no-disponible"; }
+      } while (otraVez);
+      enCurso = null;
+      // Si ha habido un cambio nuevo mientras tanto, sigue "pendiente".
+      if (!pendiente) fijarEstado(resultado === "al-dia" ? "al-dia" : "no-disponible");
+      return resultado;
+    })();
+    return enCurso;
   }
 
-  function forzar() {
-    if (pendiente === null) return;
+  function programar() {
+    pendiente = true;
+    fijarEstado("pendiente");
     clearTimeout(temporizador);
-    const datoAGuardar = pendiente;
-    pendiente = null;
-    enviar(datoAGuardar);
+    temporizador = setTimeout(ahora, 2500);
   }
 
   if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+    const siPendiente = () => { if (pendiente) ahora(); };
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") forzar();
+      if (document.visibilityState === "hidden") siPendiente();
     });
-    document.addEventListener("pagehide", forzar);
+    document.addEventListener("pagehide", siPendiente);
   }
 
-  function programar(datoAGuardar) {
-    pendiente = datoAGuardar;
-    fijarEstado("pendiente");
-    clearTimeout(temporizador);
-    temporizador = setTimeout(forzar, 2500);
-  }
-
-  Object.defineProperty(programar, "estadoActual", { get: () => estado });
-  return programar;
+  return { programar, ahora, get estadoActual() { return estado; } };
 }
 
 // src/logo.js
@@ -2102,6 +2330,7 @@ function creaGuardadoNube(alCambiarEstado, cuentaPermitida) {
 const LOGO_URI = "data:image/webp;base64,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";
 
 // src/ui.js
+
 
 
 
@@ -2198,18 +2427,46 @@ function iniciar(raiz, almacen) {
   // (si la app vive ahi) y Firebase (si hay sesion de Google) — cualquiera
   // de los dos, o ninguno, puede estar disponible segun donde se abra la app.
   const repintarAjustesSiAbierto = () => { if (ajustesAbierto) abrirAjustes(); };
-  const guardarRemoto = creaGuardadoRemoto(repintarAjustesSiAbierto);
-  const guardarNube = creaGuardadoNube(repintarAjustesSiAbierto, () => leerCuenta(almacen));
+  // El estado del guardado cambia a menudo (cada cambio pasa por "guardando"):
+  // solo se actualiza su linea, sin repintar Ajustes entero, que borraria lo
+  // que se este escribiendo en sus campos.
+  const pintarEstadoGuardado = () => {
+    const el = raiz.querySelector("#a-estado-nube");
+    if (ajustesAbierto && el) el.textContent = textoEstadoGuardado();
+  };
+  const guardarRemoto = creaGuardadoRemoto(pintarEstadoGuardado);
+  const sinc = creaSincronizador(() => sincronizar(), pintarEstadoGuardado);
+  // Guardar en este dispositivo puede fallar (almacenamiento lleno o
+  // bloqueado): no por eso se deja de intentar la copia en la nube.
+  const guardarLocal = () => {
+    try { guardar(almacen, estado); } catch { /* sigue en memoria y en la nube */ }
+  };
   const persistir = () => {
     estado.actualizadoEn = Date.now();
-    guardar(almacen, estado);
+    guardarLocal();
     guardarRemoto(estado);
-    guardarNube(estado);
+    sinc.programar();
   };
 
-  // Se usa tanto para lo que llega del Artifact como de Firebase: solo se
+  // Cambia el contenido del estado sin cambiar los objetos `estado` ni
+  // `estado.config`: hay pantallas abiertas (Ajustes) que guardan referencia
+  // a ellos y escribirian en un objeto huerfano. El tema es de cada
+  // dispositivo y se conserva.
+  function reemplazarEstado(nuevo) {
+    const tema = estado.config.tema;
+    const config = estado.config;
+    for (const k of Object.keys(config)) delete config[k];
+    Object.assign(config, nuevo.config, { tema });
+    for (const k of Object.keys(estado)) if (k !== "config") delete estado[k];
+    Object.assign(estado, { ...nuevo, config });
+    // Una nomina abierta para editar apuntaba a un objeto que ya no existe.
+    pendientesNomina = pendientesNomina.filter((p) => !p.editando);
+  }
+
+  // Para lo que llega del Artifact de Claude (si la app vive ahi): solo se
   // adopta si es mas reciente que lo local, y pasa por la misma validacion
-  // que la copia de seguridad pegada a mano.
+  // que la copia de seguridad pegada a mano. La nube de Google va por
+  // `sincronizar`, que fusiona dato a dato.
   function adoptarRemoto(remoto) {
     if (!remoto || !esMasReciente(remoto, estado)) return;
     const resultado = importarEstado(JSON.stringify(remoto));
@@ -2230,39 +2487,90 @@ function iniciar(raiz, almacen) {
     }
   }
 
-  // Al conocer la cuenta de la sesion (al arrancar o al iniciar sesion). Si la
-  // copia local es de esa cuenta, o de ninguna, se sigue la regla de siempre
-  // (gana la mas reciente). Si es de OTRA cuenta, se cargan los datos de la
-  // cuenta nueva y los locales quedan como respaldo de la suya: nunca se suben
-  // a la nube de quien no es.
-  async function alEntrarEnCuenta(uid) {
+  // Sincroniza con la nube de la cuenta de la sesion: lee lo que hay, lo
+  // fusiona dato a dato con lo local (fusion.js) y sube el resultado si hace
+  // falta. Se llama al conocer la sesion, tras cada cambio (con pausa), al
+  // volver a primer plano y al recuperar la conexion. Devuelve "al-dia" o
+  // "no-disponible".
+  //
+  // Si la copia local es de OTRA cuenta, antes se cargan los datos de la
+  // cuenta nueva y los locales quedan como respaldo de la suya: nunca se
+  // suben a la nube de quien no es.
+  let avisadaCuentaSinCargar = null;
+  async function sincronizar() {
+    if (!sesion) return "no-disponible";
+    const uid = sesion.uid;
     const lectura = await leerNube();
-    if (!sesion || sesion.uid !== uid) return; // la sesion cambio mientras tanto
+    if (!sesion || sesion.uid !== uid) return "no-disponible"; // la sesion cambio mientras tanto
     const dueno = leerCuenta(almacen);
     if (!lectura.ok || lectura.uid !== uid) {
-      if (dueno && dueno !== uid) avisar("No se han podido cargar los datos de esta cuenta (¿sin conexión?). "
-        + "No se sincroniza nada hasta que vuelvas a abrir la app con conexión.");
-      return;
+      if (dueno && dueno !== uid && avisadaCuentaSinCargar !== uid) {
+        avisadaCuentaSinCargar = uid;
+        avisar("No se han podido cargar los datos de esta cuenta (¿sin conexión?). "
+          + "No se sincroniza nada hasta que vuelva la conexión.");
+      }
+      return "no-disponible";
     }
-    const d = decidirCuenta({
-      duenoLocal: dueno, uid, remoto: lectura.dato, respaldo: leerRespaldoCuenta(almacen, uid),
-    });
-    if (d.tipo === "misma") {
+    // Lo remoto pasa por la misma validacion que una copia pegada a mano. Un
+    // documento que no es una copia del cuadrante cuenta como nube vacia.
+    let remoto = null;
+    if (lectura.dato) {
+      const r = importarEstado(JSON.stringify(lectura.dato));
+      if (r.ok) remoto = { ...r.estado, actualizadoEn: Number(lectura.dato.actualizadoEn) || 0 };
+    }
+
+    if (dueno && dueno !== uid) {
+      const d = decidirCuenta({
+        duenoLocal: dueno, uid, remoto: lectura.dato, respaldo: leerRespaldoCuenta(almacen, uid),
+      });
+      guardarRespaldoCuenta(almacen, dueno, estado);
+      reemplazarEstado(d.estado);
       fijarCuenta(almacen, uid);
-      adoptarRemoto(lectura.dato);
-      return;
+      guardarLocal();
+      pintar();
+      if (ajustesAbierto) abrirAjustes();
+      avisar("Has entrado con otra cuenta de Google: se muestran sus datos. "
+        + "Los de la cuenta anterior siguen en su nube y en este dispositivo, sin mezclarse.");
+      if (!d.subir) {
+        guardarBase(almacen, CLAVE, uid, remoto);
+        return "al-dia";
+      }
+      // Habia cambios de esta cuenta sin subir (su respaldo): siguen abajo.
+    } else {
+      fijarCuenta(almacen, uid);
     }
-    guardarRespaldoCuenta(almacen, dueno, estado);
-    const tema = estado.config.tema;
-    for (const k of Object.keys(estado)) delete estado[k];
-    Object.assign(estado, d.estado);
-    estado.config.tema = tema;
-    fijarCuenta(almacen, uid);
-    guardar(almacen, estado);
-    if (d.subir) persistir();
-    pintar();
-    avisar("Has entrado con otra cuenta de Google: se muestran sus datos. "
-      + "Los de la cuenta anterior siguen en su nube y en este dispositivo, sin mezclarse.");
+
+    const plan = planSincronizacion({
+      base: leerBase(almacen, CLAVE, uid), local: estado, remoto, ahora: Date.now(),
+      copiaDeLaCuenta: dueno === uid,
+    });
+    if (plan.accion === "adoptar" || plan.accion === "fusionar") {
+      const previo = JSON.parse(JSON.stringify(estado));
+      reemplazarEstado(plan.estado);
+      guardarLocal();
+      pintar();
+      if (ajustesAbierto) abrirAjustes();
+      // Solo si algun cambio de este dispositivo ha cedido ante uno mas
+      // reciente de otro: la copia anterior queda guardada y se avisa.
+      if (plan.perdidasLocales > 0) {
+        guardarPrevio(almacen, previo);
+        avisarAdopcion();
+      }
+    }
+    if (plan.accion === "subir" || plan.accion === "fusionar") {
+      // Las versiones anteriores de la app solo miran la marca de tiempo: lo
+      // que se sube tiene que ser mas reciente que lo que habia.
+      if (remoto && !(estado.actualizadoEn > remoto.actualizadoEn)) {
+        estado.actualizadoEn = Date.now();
+        guardarLocal();
+      }
+      const enviado = JSON.parse(JSON.stringify(estado));
+      if (!(await escribirNube(uid, enviado))) return "no-disponible";
+      guardarBase(almacen, CLAVE, uid, enviado);
+    } else {
+      guardarBase(almacen, CLAVE, uid, JSON.parse(JSON.stringify(estado)));
+    }
+    return "al-dia";
   }
 
   function avisar(texto) {
@@ -2281,7 +2589,7 @@ function iniciar(raiz, almacen) {
     const vista = raiz.querySelector("#vista");
     const nota = document.createElement("p");
     nota.className = "aviso";
-    nota.textContent = "Se ha adoptado la copia más reciente de otro dispositivo. ";
+    nota.textContent = "Otro dispositivo había cambiado lo mismo más tarde y se ha quedado su versión. ";
     const boton = document.createElement("button");
     boton.type = "button";
     boton.textContent = "Restaurar mi copia anterior";
@@ -2868,7 +3176,7 @@ function iniciar(raiz, almacen) {
   // controla con su sesion; el del Artifact es un extra silencioso.
   function textoEstadoGuardado() {
     if (sesion) {
-      const e = guardarNube.estadoActual;
+      const e = sinc.estadoActual;
       if (e === "al-dia") return "Copia en la nube (Google): al día.";
       if (e === "pendiente") return "Copia en la nube (Google): guardando…";
       if (e === "comprobando") return "Copia en la nube (Google): comprobando…";
@@ -3012,7 +3320,14 @@ function iniciar(raiz, almacen) {
           b.textContent = "Iniciar sesión con Google";
         });
       }
-      else if (b.id === "a-cerrar-sesion") { cerrarSesion(); }
+      else if (b.id === "a-cerrar-sesion") {
+        // Antes de salir se sube lo que quede pendiente (con un tope, por si
+        // no hay conexion: lo no subido queda en este dispositivo).
+        b.disabled = true;
+        b.textContent = "Cerrando…";
+        Promise.race([sinc.ahora(), new Promise((r) => setTimeout(r, 4000))])
+          .catch(() => {}).then(() => cerrarSesion());
+      }
       else if (b.dataset.tema) {
         c.tema = b.dataset.tema;
         document.documentElement.dataset.tema = c.tema;
@@ -3328,7 +3643,7 @@ function iniciar(raiz, almacen) {
   alCambiarSesion((usuario) => {
     sesion = usuario;
     repintarAjustesSiAbierto();
-    if (sesion) alEntrarEnCuenta(sesion.uid);
+    if (sesion) sinc.ahora();
   }, (err) => {
     // Volviendo de un login por redireccion (movil) que ha fallado: se abre
     // Ajustes con el motivo real en vez de dejar que parezca que "no ha
@@ -3337,6 +3652,14 @@ function iniciar(raiz, almacen) {
     const el = raiz.querySelector("#a-error");
     if (el) el.textContent = `Error al volver de Google: ${(err && (err.code || err.message)) || err}`;
   });
+
+  // Una app que se queda abierta dias en el movil no debe trabajar con datos
+  // de ayer: al volver a primer plano, y al recuperar la conexion, se vuelve
+  // a mirar la nube (y se sube lo que no se pudo subir sin cobertura).
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && sesion) sinc.ahora();
+  });
+  window.addEventListener("online", () => { if (sesion) sinc.ahora(); });
 }
 
 iniciar(document.body, localStorage);

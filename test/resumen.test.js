@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resumenMes, mesAnterior, previsionIngreso, resumenAnio } from "../src/nomina.js";
+import { resumenMes, mesAnterior, previsionIngreso, resumenAnio, fraccionDeResidencia } from "../src/nomina.js";
+import { estadoInicial } from "../src/estado.js";
 import { redondear } from "../src/fechas.js";
 
 const ESTADO = {
@@ -135,4 +136,18 @@ test("un mes sin guardias reparte ceros", () => {
   const r = resumenMes("2026-07", ESTADO);
   assert.equal(r.brutoConfirmado, 0);
   assert.equal(r.brutoPrevisto, 0);
+});
+
+test("los meses anteriores al inicio de la residencia no tienen sueldo", () => {
+  const e = estadoInicial();
+  e.config.inicioResidencia = "2026-05-27";
+  assert.equal(resumenMes("2026-04", e).brutoBase, 0);
+  assert.equal(resumenMes("2026-04", e).neto, 0);
+  assert.equal(resumenAnio(2025, e).bruto, 0);
+  // El mes en que se empieza, la parte proporcional: 5 de 31 dias.
+  assert.equal(fraccionDeResidencia("2026-05", "2026-05-27"), 5 / 31);
+  assert.equal(resumenMes("2026-05", e).brutoBase, 222.56);
+  // Desde el mes siguiente, entero; y sin fecha de inicio, tambien.
+  assert.equal(resumenMes("2026-06", e).brutoBase, 1379.90);
+  assert.equal(fraccionDeResidencia("2026-04", null), 1);
 });

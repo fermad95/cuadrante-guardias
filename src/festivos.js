@@ -14,15 +14,32 @@ const FIJOS_NACIONALES = [
   ["12-25", "Navidad"],
 ];
 
+// Andalucia traslada al lunes siguiente los festivos de fecha fija que caen
+// en domingo (lo fija el decreto del calendario de fiestas laborales de cada
+// anio: en 2026, Todos los Santos al 2 de noviembre y la Constitucion al 7 de
+// diciembre; en 2027, el Dia de Andalucia al 1 de marzo y la Asuncion al 16
+// de agosto). Ese lunes no se trabaja: la guardia del domingo sale a las
+// 09:00 y la del lunes se paga como festiva. Si un anio el decreto no
+// trasladara alguno, se desmarca en la pestana Festivos.
 export function festivosDerivados(anio) {
   const mapa = {};
+  const fijos = [];
   for (const [diaMes, nombre] of FIJOS_NACIONALES) {
     mapa[`${anio}-${diaMes}`] = { nombre, ambito: "nacional", clase: "sdf" };
+    fijos.push(`${anio}-${diaMes}`);
   }
   const pascua = domingoDePascua(anio);
   mapa[desplazar(pascua, -2)] = { nombre: "Viernes Santo", ambito: "nacional", clase: "sdf" };
   mapa[`${anio}-02-28`] = { nombre: "Día de Andalucía", ambito: "autonomico", clase: "sdf" };
+  fijos.push(`${anio}-02-28`);
   mapa[desplazar(pascua, -3)] = { nombre: "Jueves Santo", ambito: "autonomico", clase: "sdf" };
+  for (const fecha of fijos) {
+    if (diaSemana(fecha) !== 0) continue;
+    const lunes = desplazar(fecha, 1);
+    if (!mapa[lunes]) {
+      mapa[lunes] = { nombre: `${mapa[fecha].nombre} (trasladado del domingo)`, ambito: mapa[fecha].ambito, clase: "sdf", trasladado: true };
+    }
+  }
   return mapa;
 }
 

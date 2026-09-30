@@ -3,9 +3,10 @@ import { diasDelMes, diaSemana, redondear } from "./fechas.js";
 import { sugerenciaPara, calcularGuardia } from "./motor.js";
 import { resumenMes, resumenAnio, tiposEfectivos, historialTipos, ingresoDelMes, contrasteGuardias, nominaDe, diferenciasConSAS, configConPrecios, tarifasDesfasadas, csvAnual } from "./nomina.js";
 import { extraerTextoPdf, parsearNomina } from "./nomina-pdf.js";
-import { cargar, guardar, estadoInicial, importarEstado, mismaData, guardarPrevio, cargarPrevio } from "./estado.js";
+import { CLAVE, cargar, guardar, estadoInicial, importarEstado, mismaData, guardarPrevio, cargarPrevio } from "./estado.js";
+import { planSincronizacion, leerBase, guardarBase } from "./fusion.js";
 import { cargarRemoto, creaGuardadoRemoto, esMasReciente } from "./persistencia.js";
-import { alCambiarSesion, iniciarSesion, cerrarSesion, leerNube, creaGuardadoNube } from "./nube.js";
+import { alCambiarSesion, iniciarSesion, cerrarSesion, leerNube, escribirNube, creaSincronizador } from "./nube.js";
 import { leerCuenta, fijarCuenta, guardarRespaldoCuenta, leerRespaldoCuenta, decidirCuenta } from "./cuenta.js";
 import { RETRIBUCIONES_ANEXO, retribucionesDe } from "./tarifas.js";
 import { calendarioDe } from "./festivos.js";
@@ -96,18 +97,46 @@ export function iniciar(raiz, almacen) {
   // (si la app vive ahi) y Firebase (si hay sesion de Google) — cualquiera
   // de los dos, o ninguno, puede estar disponible segun donde se abra la app.
   const repintarAjustesSiAbierto = () => { if (ajustesAbierto) abrirAjustes(); };
-  const guardarRemoto = creaGuardadoRemoto(repintarAjustesSiAbierto);
-  const guardarNube = creaGuardadoNube(repintarAjustesSiAbierto, () => leerCuenta(almacen));
+  // El estado del guardado cambia a menudo (cada cambio pasa por "guardando"):
+  // solo se actualiza su linea, sin repintar Ajustes entero, que borraria lo
+  // que se este escribiendo en sus campos.
+  const pintarEstadoGuardado = () => {
+    const el = raiz.querySelector("#a-estado-nube");
+    if (ajustesAbierto && el) el.textContent = textoEstadoGuardado();
+  };
+  const guardarRemoto = creaGuardadoRemoto(pintarEstadoGuardado);
+  const sinc = creaSincronizador(() => sincronizar(), pintarEstadoGuardado);
+  // Guardar en este dispositivo puede fallar (almacenamiento lleno o
+  // bloqueado): no por eso se deja de intentar la copia en la nube.
+  const guardarLocal = () => {
+    try { guardar(almacen, estado); } catch { /* sigue en memoria y en la nube */ }
+  };
   const persistir = () => {
     estado.actualizadoEn = Date.now();
-    guardar(almacen, estado);
+    guardarLocal();
     guardarRemoto(estado);
-    guardarNube(estado);
+    sinc.programar();
   };
 
-  // Se usa tanto para lo que llega del Artifact como de Firebase: solo se
+  // Cambia el contenido del estado sin cambiar los objetos `estado` ni
+  // `estado.config`: hay pantallas abiertas (Ajustes) que guardan referencia
+  // a ellos y escribirian en un objeto huerfano. El tema es de cada
+  // dispositivo y se conserva.
+  function reemplazarEstado(nuevo) {
+    const tema = estado.config.tema;
+    const config = estado.config;
+    for (const k of Object.keys(config)) delete config[k];
+    Object.assign(config, nuevo.config, { tema });
+    for (const k of Object.keys(estado)) if (k !== "config") delete estado[k];
+    Object.assign(estado, { ...nuevo, config });
+    // Una nomina abierta para editar apuntaba a un objeto que ya no existe.
+    pendientesNomina = pendientesNomina.filter((p) => !p.editando);
+  }
+
+  // Para lo que llega del Artifact de Claude (si la app vive ahi): solo se
   // adopta si es mas reciente que lo local, y pasa por la misma validacion
-  // que la copia de seguridad pegada a mano.
+  // que la copia de seguridad pegada a mano. La nube de Google va por
+  // `sincronizar`, que fusiona dato a dato.
   function adoptarRemoto(remoto) {
     if (!remoto || !esMasReciente(remoto, estado)) return;
     const resultado = importarEstado(JSON.stringify(remoto));
@@ -128,39 +157,90 @@ export function iniciar(raiz, almacen) {
     }
   }
 
-  // Al conocer la cuenta de la sesion (al arrancar o al iniciar sesion). Si la
-  // copia local es de esa cuenta, o de ninguna, se sigue la regla de siempre
-  // (gana la mas reciente). Si es de OTRA cuenta, se cargan los datos de la
-  // cuenta nueva y los locales quedan como respaldo de la suya: nunca se suben
-  // a la nube de quien no es.
-  async function alEntrarEnCuenta(uid) {
+  // Sincroniza con la nube de la cuenta de la sesion: lee lo que hay, lo
+  // fusiona dato a dato con lo local (fusion.js) y sube el resultado si hace
+  // falta. Se llama al conocer la sesion, tras cada cambio (con pausa), al
+  // volver a primer plano y al recuperar la conexion. Devuelve "al-dia" o
+  // "no-disponible".
+  //
+  // Si la copia local es de OTRA cuenta, antes se cargan los datos de la
+  // cuenta nueva y los locales quedan como respaldo de la suya: nunca se
+  // suben a la nube de quien no es.
+  let avisadaCuentaSinCargar = null;
+  async function sincronizar() {
+    if (!sesion) return "no-disponible";
+    const uid = sesion.uid;
     const lectura = await leerNube();
-    if (!sesion || sesion.uid !== uid) return; // la sesion cambio mientras tanto
+    if (!sesion || sesion.uid !== uid) return "no-disponible"; // la sesion cambio mientras tanto
     const dueno = leerCuenta(almacen);
     if (!lectura.ok || lectura.uid !== uid) {
-      if (dueno && dueno !== uid) avisar("No se han podido cargar los datos de esta cuenta (¿sin conexión?). "
-        + "No se sincroniza nada hasta que vuelvas a abrir la app con conexión.");
-      return;
+      if (dueno && dueno !== uid && avisadaCuentaSinCargar !== uid) {
+        avisadaCuentaSinCargar = uid;
+        avisar("No se han podido cargar los datos de esta cuenta (¿sin conexión?). "
+          + "No se sincroniza nada hasta que vuelva la conexión.");
+      }
+      return "no-disponible";
     }
-    const d = decidirCuenta({
-      duenoLocal: dueno, uid, remoto: lectura.dato, respaldo: leerRespaldoCuenta(almacen, uid),
-    });
-    if (d.tipo === "misma") {
+    // Lo remoto pasa por la misma validacion que una copia pegada a mano. Un
+    // documento que no es una copia del cuadrante cuenta como nube vacia.
+    let remoto = null;
+    if (lectura.dato) {
+      const r = importarEstado(JSON.stringify(lectura.dato));
+      if (r.ok) remoto = { ...r.estado, actualizadoEn: Number(lectura.dato.actualizadoEn) || 0 };
+    }
+
+    if (dueno && dueno !== uid) {
+      const d = decidirCuenta({
+        duenoLocal: dueno, uid, remoto: lectura.dato, respaldo: leerRespaldoCuenta(almacen, uid),
+      });
+      guardarRespaldoCuenta(almacen, dueno, estado);
+      reemplazarEstado(d.estado);
       fijarCuenta(almacen, uid);
-      adoptarRemoto(lectura.dato);
-      return;
+      guardarLocal();
+      pintar();
+      if (ajustesAbierto) abrirAjustes();
+      avisar("Has entrado con otra cuenta de Google: se muestran sus datos. "
+        + "Los de la cuenta anterior siguen en su nube y en este dispositivo, sin mezclarse.");
+      if (!d.subir) {
+        guardarBase(almacen, CLAVE, uid, remoto);
+        return "al-dia";
+      }
+      // Habia cambios de esta cuenta sin subir (su respaldo): siguen abajo.
+    } else {
+      fijarCuenta(almacen, uid);
     }
-    guardarRespaldoCuenta(almacen, dueno, estado);
-    const tema = estado.config.tema;
-    for (const k of Object.keys(estado)) delete estado[k];
-    Object.assign(estado, d.estado);
-    estado.config.tema = tema;
-    fijarCuenta(almacen, uid);
-    guardar(almacen, estado);
-    if (d.subir) persistir();
-    pintar();
-    avisar("Has entrado con otra cuenta de Google: se muestran sus datos. "
-      + "Los de la cuenta anterior siguen en su nube y en este dispositivo, sin mezclarse.");
+
+    const plan = planSincronizacion({
+      base: leerBase(almacen, CLAVE, uid), local: estado, remoto, ahora: Date.now(),
+      copiaDeLaCuenta: dueno === uid,
+    });
+    if (plan.accion === "adoptar" || plan.accion === "fusionar") {
+      const previo = JSON.parse(JSON.stringify(estado));
+      reemplazarEstado(plan.estado);
+      guardarLocal();
+      pintar();
+      if (ajustesAbierto) abrirAjustes();
+      // Solo si algun cambio de este dispositivo ha cedido ante uno mas
+      // reciente de otro: la copia anterior queda guardada y se avisa.
+      if (plan.perdidasLocales > 0) {
+        guardarPrevio(almacen, previo);
+        avisarAdopcion();
+      }
+    }
+    if (plan.accion === "subir" || plan.accion === "fusionar") {
+      // Las versiones anteriores de la app solo miran la marca de tiempo: lo
+      // que se sube tiene que ser mas reciente que lo que habia.
+      if (remoto && !(estado.actualizadoEn > remoto.actualizadoEn)) {
+        estado.actualizadoEn = Date.now();
+        guardarLocal();
+      }
+      const enviado = JSON.parse(JSON.stringify(estado));
+      if (!(await escribirNube(uid, enviado))) return "no-disponible";
+      guardarBase(almacen, CLAVE, uid, enviado);
+    } else {
+      guardarBase(almacen, CLAVE, uid, JSON.parse(JSON.stringify(estado)));
+    }
+    return "al-dia";
   }
 
   function avisar(texto) {
@@ -179,7 +259,7 @@ export function iniciar(raiz, almacen) {
     const vista = raiz.querySelector("#vista");
     const nota = document.createElement("p");
     nota.className = "aviso";
-    nota.textContent = "Se ha adoptado la copia más reciente de otro dispositivo. ";
+    nota.textContent = "Otro dispositivo había cambiado lo mismo más tarde y se ha quedado su versión. ";
     const boton = document.createElement("button");
     boton.type = "button";
     boton.textContent = "Restaurar mi copia anterior";
@@ -766,7 +846,7 @@ export function iniciar(raiz, almacen) {
   // controla con su sesion; el del Artifact es un extra silencioso.
   function textoEstadoGuardado() {
     if (sesion) {
-      const e = guardarNube.estadoActual;
+      const e = sinc.estadoActual;
       if (e === "al-dia") return "Copia en la nube (Google): al día.";
       if (e === "pendiente") return "Copia en la nube (Google): guardando…";
       if (e === "comprobando") return "Copia en la nube (Google): comprobando…";
@@ -910,7 +990,14 @@ export function iniciar(raiz, almacen) {
           b.textContent = "Iniciar sesión con Google";
         });
       }
-      else if (b.id === "a-cerrar-sesion") { cerrarSesion(); }
+      else if (b.id === "a-cerrar-sesion") {
+        // Antes de salir se sube lo que quede pendiente (con un tope, por si
+        // no hay conexion: lo no subido queda en este dispositivo).
+        b.disabled = true;
+        b.textContent = "Cerrando…";
+        Promise.race([sinc.ahora(), new Promise((r) => setTimeout(r, 4000))])
+          .catch(() => {}).then(() => cerrarSesion());
+      }
       else if (b.dataset.tema) {
         c.tema = b.dataset.tema;
         document.documentElement.dataset.tema = c.tema;
@@ -1226,7 +1313,7 @@ export function iniciar(raiz, almacen) {
   alCambiarSesion((usuario) => {
     sesion = usuario;
     repintarAjustesSiAbierto();
-    if (sesion) alEntrarEnCuenta(sesion.uid);
+    if (sesion) sinc.ahora();
   }, (err) => {
     // Volviendo de un login por redireccion (movil) que ha fallado: se abre
     // Ajustes con el motivo real en vez de dejar que parezca que "no ha
@@ -1235,4 +1322,12 @@ export function iniciar(raiz, almacen) {
     const el = raiz.querySelector("#a-error");
     if (el) el.textContent = `Error al volver de Google: ${(err && (err.code || err.message)) || err}`;
   });
+
+  // Una app que se queda abierta dias en el movil no debe trabajar con datos
+  // de ayer: al volver a primer plano, y al recuperar la conexion, se vuelve
+  // a mirar la nube (y se sube lo que no se pudo subir sin cobertura).
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && sesion) sinc.ahora();
+  });
+  window.addEventListener("online", () => { if (sesion) sinc.ahora(); });
 }

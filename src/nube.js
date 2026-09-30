@@ -23,26 +23,41 @@ const CONFIG = {
 
 let sdkPromesa = null;
 
+// Si la carga falla (sin red), no se memoriza el fallo: la siguiente llamada
+// vuelve a intentarlo. Antes el primer fallo se quedaba para toda la sesion,
+// y una app abierta sin cobertura no volvia a sincronizar hasta recargarla.
 function cargarSDK() {
   if (!sdkPromesa) {
-    sdkPromesa = Promise.all([
+    const intento = Promise.all([
       import(`${CDN}/firebase-app.js`),
       import(`${CDN}/firebase-auth.js`),
       import(`${CDN}/firebase-firestore.js`),
     ]).then(([appMod, authMod, fsMod]) => {
       const app = appMod.initializeApp(CONFIG);
       return { auth: authMod.getAuth(app), db: fsMod.getFirestore(app), authMod, fsMod };
-    }).catch(() => null);
+    }).catch(() => {
+      if (sdkPromesa === intento) sdkPromesa = null;
+      return null;
+    });
+    sdkPromesa = intento;
   }
   return sdkPromesa;
 }
 
 // Llama a `fn(usuario | null)` cada vez que cambia la sesion. `usuario` es
 // `{ uid, nombre, correo, foto }` o `null` si no hay sesion. Si el SDK no
-// carga (sin red), se llama una vez con null y ya esta.
+// carga (sin red), se llama una vez con null y se vuelve a intentar cuando
+// vuelve la conexion o la app vuelve a primer plano.
 export function alCambiarSesion(fn, alErrorRedireccion) {
-  cargarSDK().then((f) => {
-    if (!f) { fn(null); return; }
+  let suscrito = false;
+  let avisadoSinSDK = false;
+  const intentar = () => cargarSDK().then((f) => {
+    if (suscrito) return;
+    if (!f) {
+      if (!avisadoSinSDK) { avisadoSinSDK = true; fn(null); }
+      return;
+    }
+    suscrito = true;
     f.authMod.onAuthStateChanged(f.auth, (u) => {
       fn(u ? { uid: u.uid, nombre: u.displayName, correo: u.email, foto: u.photoURL } : null);
     });
@@ -55,6 +70,13 @@ export function alCambiarSesion(fn, alErrorRedireccion) {
       if (typeof alErrorRedireccion === "function") alErrorRedireccion(err);
     });
   });
+  intentar();
+  if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+    window.addEventListener("online", intentar);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") intentar();
+    });
+  }
 }
 
 // El login va siempre por popup, tambien con la app anadida a la pantalla de
@@ -122,23 +144,36 @@ export async function leerNube() {
   }
 }
 
-// `esMasReciente` (la logica de "gana quien sea mas reciente") se reutiliza
-// de persistencia.js: es la misma funcion pura, y por el mismo motivo de
-// arriba no puede haber una segunda declaracion con el mismo nombre aqui.
+// Escribe el estado en la nube de `uid`, y solo si la sesion sigue siendo la
+// de esa cuenta: si ha cambiado mientras tanto, no se escribe nada (los datos
+// de una cuenta nunca van a la nube de otra). Devuelve si se ha escrito.
+export async function escribirNube(uid, dato) {
+  const act = await uidActual();
+  if (!act || act.uid !== uid) return false;
+  try {
+    // Se envia una copia ya serializada, no el objeto vivo: Firestore rechaza
+    // cualquier campo `undefined` y el guardado entero fallaria.
+    await act.f.fsMod.setDoc(act.f.fsMod.doc(act.f.db, "usuarios", uid), JSON.parse(JSON.stringify(dato)));
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-// Debounced + envio inmediato al ocultar la pestana, igual que el guardado
-// en el Artifact. `alCambiarEstado(estado)` recibe "comprobando" / "al-dia" /
-// "pendiente" / "no-disponible" (no-disponible tambien cuando no hay sesion).
-// `cuentaPermitida()` (opcional) devuelve el uid de la cuenta duena de los
-// datos locales: si hay una y la sesion es otra, no se escribe nada. Evita
-// que un guardado pendiente de una cuenta acabe en la nube de otra al
-// cambiar de cuenta en el mismo dispositivo.
-export function creaGuardadoNube(alCambiarEstado, cuentaPermitida) {
+// Decide CUANDO se sincroniza; el COMO lo pone `tarea` (ui.js), que lee la
+// nube, fusiona y escribe, y devuelve "al-dia" o "no-disponible".
+//   programar()  tras cada cambio: espera una pausa (no se sincroniza en cada
+//                tecla), pero si la pestana se oculta o se cierra antes, va ya
+//   ahora()      sin esperar (al iniciar sesion, al volver a primer plano, al
+//                recuperar la conexion); devuelve una promesa con el resultado
+// Nunca corren dos a la vez: si se pide otra durante una, se repite al acabar.
+// `estadoActual`: "comprobando" / "al-dia" / "pendiente" / "no-disponible".
+export function creaSincronizador(tarea, alCambiarEstado) {
   let temporizador = null;
-  let ultimoEnviado = null;
-  let ultimoUid = null;
-  let pendiente = null;
   let estado = "comprobando";
+  let pendiente = false; // hay cambios locales esperando a la pausa
+  let enCurso = null;
+  let otraVez = false;
 
   function fijarEstado(nuevo) {
     if (nuevo === estado) return;
@@ -146,77 +181,38 @@ export function creaGuardadoNube(alCambiarEstado, cuentaPermitida) {
     if (typeof alCambiarEstado === "function") alCambiarEstado(estado);
   }
 
-  // Si al arrancar ya hay sesion (usuario que volvio), que el aviso empiece
-  // en "al dia" (nada pendiente) en vez de quedarse en "no disponible" hasta
-  // el primer cambio, que seria enganoso teniendo sesion. Ojo: dos intentos
-  // anteriores (mirar `currentUser` justo tras cargar el SDK, y despues
-  // esperar a un solo `onAuthStateChanged`/`authStateReady()`) seguian
-  // dejando el aviso encasquillado en "no disponible" — verificado en vivo
-  // las dos veces: la sesion persistida puede tardar en resolverse mas de lo
-  // que cualquiera de esas señales garantiza, y cualquier comprobacion de
-  // "una sola vez" puede caer justo antes de que se resuelva. La solucion no
-  // es afinar CUANDO se comprueba, sino no fiarse nunca de un "no hay
-  // sesion" que salga de aqui: este listener se queda escuchando
-  // indefinidamente (no una vez) y solo corrige el aviso hacia "al dia" en
-  // cuanto aparece un usuario real, aunque sea tarde. El "no disponible" por
-  // ausencia de sesion solo se declara tras un plazo de gracia sin que
-  // aparezca nadie — y si la sesion llega despues de todos modos, este mismo
-  // listener lo corrige.
-  cargarSDK().then((f) => {
-    if (!f) { if (estado === "comprobando") fijarEstado("no-disponible"); return; }
-    f.authMod.onAuthStateChanged(f.auth, (u) => {
-      if (u && (estado === "comprobando" || estado === "no-disponible")) fijarEstado("al-dia");
-    });
-    setTimeout(() => {
-      if (estado === "comprobando") fijarEstado("no-disponible");
-    }, 8000);
-  });
-
-  async function enviar(datoAGuardar) {
-    const act = await uidActual();
-    if (!act) { fijarEstado("no-disponible"); return; }
-    const { f, uid } = act;
-    const duena = typeof cuentaPermitida === "function" ? cuentaPermitida() : null;
-    if (duena && duena !== uid) { fijarEstado("no-disponible"); return; }
-    // Si ha cambiado de cuenta (cerrar sesion + entrar con otra Google
-    // distinta) sin que el estado local haya cambiado, no hay que confiar
-    // en el "ya esta enviado" de la cuenta anterior.
-    if (uid !== ultimoUid) { ultimoEnviado = null; ultimoUid = uid; }
-    const contenido = JSON.stringify(datoAGuardar);
-    if (contenido === ultimoEnviado) { fijarEstado("al-dia"); return; }
-    try {
-      // Se envia la version ya serializada, no el objeto vivo: Firestore
-      // rechaza cualquier campo `undefined` y el guardado entero fallaria.
-      await f.fsMod.setDoc(f.fsMod.doc(f.db, "usuarios", uid), JSON.parse(contenido));
-      ultimoEnviado = contenido;
-      fijarEstado("al-dia");
-    } catch {
-      fijarEstado("no-disponible");
-    }
+  function ahora() {
+    if (enCurso) { otraVez = true; return enCurso; }
+    clearTimeout(temporizador);
+    pendiente = false;
+    enCurso = (async () => {
+      let resultado;
+      do {
+        otraVez = false;
+        try { resultado = await tarea(); } catch { resultado = "no-disponible"; }
+      } while (otraVez);
+      enCurso = null;
+      // Si ha habido un cambio nuevo mientras tanto, sigue "pendiente".
+      if (!pendiente) fijarEstado(resultado === "al-dia" ? "al-dia" : "no-disponible");
+      return resultado;
+    })();
+    return enCurso;
   }
 
-  function forzar() {
-    if (pendiente === null) return;
+  function programar() {
+    pendiente = true;
+    fijarEstado("pendiente");
     clearTimeout(temporizador);
-    const datoAGuardar = pendiente;
-    pendiente = null;
-    enviar(datoAGuardar);
+    temporizador = setTimeout(ahora, 2500);
   }
 
   if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+    const siPendiente = () => { if (pendiente) ahora(); };
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") forzar();
+      if (document.visibilityState === "hidden") siPendiente();
     });
-    document.addEventListener("pagehide", forzar);
+    document.addEventListener("pagehide", siPendiente);
   }
 
-  function programar(datoAGuardar) {
-    pendiente = datoAGuardar;
-    fijarEstado("pendiente");
-    clearTimeout(temporizador);
-    temporizador = setTimeout(forzar, 2500);
-  }
-
-  Object.defineProperty(programar, "estadoActual", { get: () => estado });
-  return programar;
+  return { programar, ahora, get estadoActual() { return estado; } };
 }

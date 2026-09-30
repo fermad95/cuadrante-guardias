@@ -142,3 +142,12 @@ test("dos festivos seguidos dan una guardia de 24h", () => {
   // 2026-04-02 Jueves Santo y 2026-04-03 Viernes Santo
   assert.deepEqual(sugerenciaPara("2026-04-02", {}), { horas: 24, inicio: "09:00" });
 });
+
+test("domingo con el lunes festivo por traslado: se sale a las 09:00, y el lunes es guardia de festivo", () => {
+  // 1 de noviembre de 2026 es domingo y el festivo pasa al lunes 2.
+  assert.deepEqual(sugerenciaPara("2026-11-01"), { horas: 24, inicio: "09:00" });
+  assert.deepEqual(sugerenciaPara("2026-11-02"), { horas: 23, inicio: "09:00" });
+  const r = calcularGuardia({ fecha: "2026-11-02", horas: 23, inicio: "09:00" }, {},
+    { inicioResidencia: "2026-05-27", cortarAMedianoche: true });
+  assert.deepEqual(r.horasPorTipo, { laborable: 8, sdf: 15, especial: 0 });
+});

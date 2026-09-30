@@ -49,7 +49,9 @@ test("cada modulo importado esta en el bundle", () => {
 // los modulos por separado, solo uno que mire el bundle final. Paso en la
 // practica el 21/08/2026 con `cargarRemoto` en persistencia.js y nube.js.
 function nombresDuplicados(html) {
-  const nombres = [...html.matchAll(/^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/gm)]
+  // Funciones y tambien const/let/class de nivel superior (columna 0): una
+  // constante repetida en dos modulos rompe el bundle igual que una funcion.
+  const nombres = [...html.matchAll(/^(?:export\s+)?(?:(?:async\s+)?function\*?|const|let|class)\s+([A-Za-z_$][\w$]*)/gm)]
     .map((m) => m[1]);
   const vistos = new Set();
   const repetidos = new Set();

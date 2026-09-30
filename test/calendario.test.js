@@ -13,7 +13,30 @@ test("2026 deriva los mismos festivos nacionales y andaluces que estaban a mano"
   for (const f of esperadas) {
     assert.ok(c[f], `falta ${f}`);
   }
-  assert.equal(Object.keys(c).length, 12);
+  // Los doce del decreto, mas los dos lunes a los que se trasladan los que
+  // caen en domingo (Todos los Santos y la Constitucion).
+  assert.equal(Object.keys(c).length, 14);
+});
+
+test("los festivos de fecha fija que caen en domingo se trasladan al lunes", () => {
+  // Decreto 101/2025 (BOJA): en 2026, 1 de noviembre -> lunes 2 y 6 de diciembre -> lunes 7.
+  const c26 = festivosDerivados(2026);
+  assert.equal(c26["2026-11-02"].clase, "sdf");
+  assert.equal(c26["2026-12-07"].clase, "sdf");
+  assert.match(c26["2026-11-02"].nombre, /Todos los Santos/);
+  assert.equal(clasificarDia("2026-11-02"), "sdf");
+  assert.equal(clasificarDia("2026-12-07"), "sdf");
+  // 2027: Dia de Andalucia (28 de febrero) -> lunes 1 de marzo; Asuncion -> lunes 16 de agosto.
+  const c27 = festivosDerivados(2027);
+  assert.ok(c27["2027-03-01"] && c27["2027-08-16"]);
+  assert.equal(c27["2027-03-01"].ambito, "autonomico");
+  // Los que no caen en domingo no generan nada: el sabado no se traslada.
+  assert.equal(c26["2026-08-17"], undefined); // 15 de agosto de 2026 es sabado
+  assert.equal(c26["2026-03-02"], undefined); // 28 de febrero de 2026 es sabado
+});
+
+test("un festivo trasladado se puede desmarcar si ese anio no se traslada", () => {
+  assert.equal(clasificarDia("2026-11-02", { "2026-11-02": { clase: "laborable" } }), "laborable");
 });
 
 test("los locales de Cordoba ya no estan en el calendario derivado", () => {

@@ -16,7 +16,8 @@
 <body>
 <h1>Banco de pruebas de sincronización</h1>
 <p>La app real con un Firebase simulado. Comprueba que cambiar de cuenta de Google en el mismo
-  dispositivo nunca mezcla datos ni escribe en la nube de quien no es. Tarda unos 40 segundos.</p>
+  dispositivo nunca mezcla datos ni escribe en la nube de quien no es, y que sincronizar entre
+  dispositivos no pierde nada. Tarda algo más de un minuto.</p>
 <button id="lanzar">Ejecutar los escenarios</button>
 <p id="resumen"></p>
 <table id="resultados"></table>
@@ -37,11 +38,13 @@ function comprobar(escenario, que, ok) {
   document.getElementById("resultados").appendChild(tr);
 }
 
-function preparar({ local, cuenta, fb }) {
+// `base`: { uid: estado } con lo ultimo que el dispositivo supo de la nube de esa cuenta.
+function preparar({ local, cuenta, fb, base }) {
   localStorage.clear();
   sessionStorage.clear();
   if (local) localStorage.setItem(E.clave, JSON.stringify(local));
   if (cuenta) localStorage.setItem(`${E.clave}_cuenta`, cuenta);
+  for (const [uid, dato] of Object.entries(base || {})) localStorage.setItem(`${E.clave}_base_${uid}`, JSON.stringify(dato));
   sessionStorage.setItem("__FB_init", JSON.stringify(fb));
 }
 
@@ -61,6 +64,17 @@ async function cambiarA(w, uid) {
   await esperar(150);
   w.__FB.login(uid, `${uid}@prueba`);
   await esperar(1500);
+}
+
+// Apunta una guardia en el primer dia libre del mes siguiente al visible.
+async function añadirGuardia(w) {
+  const d = w.document;
+  d.querySelector('[data-mes="1"]').click(); await esperar(150);
+  const dia = [...d.querySelectorAll("[data-fecha]")].find((b) => !b.querySelector(".horas"));
+  const fecha = dia.dataset.fecha;
+  dia.click(); await esperar(250);
+  d.querySelector("#m-guardar").click(); await esperar(100);
+  return fecha;
 }
 
 const escenarios = {
@@ -133,6 +147,76 @@ const escenarios = {
     comprobar(n, "la copia sigue siendo de A", localStorage.getItem(`${E.clave}_cuenta`) === "uidA");
     await esperar(3500);
     comprobar(n, "no escribe en ninguna nube", w.__FB.escrituras.length === 0);
+  },
+
+  async "6. Movil nuevo: fecha de inicio antes de iniciar sesion"() {
+    const n = "6. Móvil nuevo";
+    preparar({ fb: { user: null, docs: { uidA: E.A } } });
+    const w = await abrir();
+    const d = w.document;
+    d.querySelector("#b-inicio").value = "2026-05-27";
+    d.querySelector("#b-empezar").click(); await esperar(200);
+    d.querySelector("#intro")?.click(); await esperar(100);
+    comprobar(n, "la copia local (casi vacia) es mas reciente que la nube", local().actualizadoEn > E.A.actualizadoEn && Object.keys(local().guardias).length === 0);
+    w.__FB.login("uidA", "uidA@prueba");
+    await esperar(1500);
+    comprobar(n, "al iniciar sesion se cargan los datos de la cuenta", mismos(local(), E.A));
+    await añadirGuardia(w);
+    await esperar(3500);
+    comprobar(n, "la nube conserva todo lo que tenia", Object.keys(E.A.guardias).every((f) => f in w.__FB.docs.uidA.guardias)
+      && w.__FB.docs.uidA.nominas.length === E.A.nominas.length);
+    comprobar(n, "y ademas la guardia nueva", Object.keys(w.__FB.docs.uidA.guardias).length === Object.keys(E.A.guardias).length + 1);
+  },
+
+  async "7. Cambio hecho sin cobertura"() {
+    const n = "7. Sin subir al cerrar";
+    const conCambio = { ...E.A, actualizadoEn: E.A.actualizadoEn + 500, guardias: { ...E.A.guardias, "2026-09-20": { horas: 24, inicio: "09:00", lugar: "", hecha: false } } };
+    preparar({ local: conCambio, cuenta: "uidA", base: { uidA: E.A }, fb: { user: { uid: "uidA" }, docs: { uidA: E.A } } });
+    const w = await abrir();
+    await esperar(1000);
+    comprobar(n, "al volver a abrir con conexion se sube sin tocar nada", "2026-09-20" in w.__FB.docs.uidA.guardias);
+    comprobar(n, "una sola escritura", w.__FB.escrituras.length === 1);
+    comprobar(n, "el local no cambia", "2026-09-20" in local().guardias && mismos(local(), conCambio));
+  },
+
+  async "8. App abierta con datos de ayer"() {
+    const n = "8. Dos dispositivos";
+    preparar({ local: E.A, cuenta: "uidA", base: { uidA: E.A }, fb: { user: { uid: "uidA" }, docs: { uidA: E.A } } });
+    const w = await abrir();
+    comprobar(n, "arranca sin escribir", w.__FB.escrituras.length === 0);
+    // Otro dispositivo sube una nomina y una guardia mientras este sigue abierto.
+    const otra = { periodo: "2026-10", clase: "base", bruto: 1379.9, neto: 1182.78 };
+    w.__FB.docs.uidA = { ...E.A, actualizadoEn: Date.now(), nominas: [...E.A.nominas, otra],
+      guardias: { ...E.A.guardias, "2026-10-03": { horas: 24, inicio: "09:00", lugar: "", hecha: false } } };
+    const fecha = await añadirGuardia(w);
+    await esperar(3500);
+    const nube = w.__FB.docs.uidA;
+    comprobar(n, "la guardia de este dispositivo llega a la nube", fecha in nube.guardias);
+    comprobar(n, "sin borrar la guardia del otro", "2026-10-03" in nube.guardias);
+    comprobar(n, "ni su nomina", nube.nominas.some((x) => x.periodo === "2026-10" && x.clase === "base"));
+    comprobar(n, "y este dispositivo tambien las ve", "2026-10-03" in local().guardias && local().nominas.length === E.A.nominas.length + 1);
+    const escritas = w.__FB.escrituras.length;
+    w.document.dispatchEvent(new Event("visibilitychange"));
+    await esperar(1000);
+    comprobar(n, "ya iguales, volver a primer plano no escribe", w.__FB.escrituras.length === escritas);
+  },
+
+  async "9. Borrados"() {
+    const n = "9. Borrar";
+    preparar({ local: E.A, cuenta: "uidA", base: { uidA: E.A }, fb: { user: { uid: "uidA" }, docs: { uidA: E.A } } });
+    const w = await abrir();
+    const d = w.document;
+    // Otro dispositivo borra una guardia; este borra otra distinta.
+    const { "2026-07-08": _, ...sinLaDel8 } = E.A.guardias;
+    w.__FB.docs.uidA = { ...E.A, actualizadoEn: Date.now(), guardias: sinLaDel8 };
+    while (!d.querySelector('[data-fecha="2026-08-11"]')) { d.querySelector('[data-mes="-1"]').click(); await esperar(150); }
+    d.querySelector('[data-fecha="2026-08-11"]').click(); await esperar(250);
+    d.querySelector("#m-borrar").click();
+    await esperar(3500);
+    const nube = w.__FB.docs.uidA.guardias;
+    comprobar(n, "los dos borrados se respetan", !("2026-07-08" in nube) && !("2026-08-11" in nube));
+    comprobar(n, "y no se borra nada mas", Object.keys(nube).length === Object.keys(E.A.guardias).length - 2);
+    comprobar(n, "local y nube dicen lo mismo", mismos(local(), w.__FB.docs.uidA));
   },
 };
 

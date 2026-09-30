@@ -1,5 +1,5 @@
 // src/nomina.js
-import { redondear, mesDe, diaSiguiente } from "./fechas.js";
+import { redondear, mesDe, diaSiguiente, diasDelMes } from "./fechas.js";
 import { calcularGuardia } from "./motor.js";
 import { retribucionFija, anioResidenciaEn, retribucionesDe } from "./tarifas.js";
 
@@ -120,10 +120,25 @@ function tipoIrpfBase(nominas, config) {
   return mejor.irpf / mejor.bruto;
 }
 
+// Parte del mes que cae dentro de la residencia: 0 en los meses anteriores al
+// inicio, la fraccion de dias en el mes en que se empieza y 1 despues. Sin
+// esto, el resumen anual sumaba un sueldo entero por cada mes anterior a
+// empezar. El prorrateo del primer mes es por dias naturales: una
+// aproximacion, que la nomina real de ese mes sustituye si se registra.
+export function fraccionDeResidencia(anioMes, inicioResidencia) {
+  if (!inicioResidencia) return 1;
+  const dias = diasDelMes(anioMes);
+  const dentro = dias.filter((d) => d >= inicioResidencia).length;
+  return dentro / dias.length;
+}
+
 export function resumenMes(anioMes, estado) {
   const tipos = tiposEfectivos(estado.nominas, estado.config);
-  const anio = anioResidenciaEn(`${anioMes}-15`, estado.config.inicioResidencia);
-  const brutoBase = retribucionFija(anio, estado.config).mensual;
+  const inicio = estado.config.inicioResidencia;
+  // El anio de residencia del mes es el del dia 15, salvo en el mes en que
+  // se empieza, que es R1 aunque el inicio caiga despues del 15.
+  const anio = anioResidenciaEn(inicio && inicio.slice(0, 7) === anioMes ? inicio : `${anioMes}-15`, inicio);
+  const brutoBase = redondear(retribucionFija(anio, estado.config).mensual * fraccionDeResidencia(anioMes, inicio));
 
   const horasPorTipo = { laborable: 0, sdf: 0, especial: 0 };
   const importePorTipo = { laborable: 0, sdf: 0, especial: 0 };
