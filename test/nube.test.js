@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  cargarNube, creaGuardadoNube, iniciarSesion, cerrarSesion, alCambiarSesion,
+  cargarNube, creaGuardadoNube, iniciarSesion, cerrarSesion, alCambiarSesion, entrarConGoogle,
 } from "../src/nube.js";
 
 test("cargarNube sin SDK disponible devuelve null", async () => {
@@ -42,4 +42,44 @@ test("creaGuardadoNube empieza comprobando y pasa a no-disponible sin sesion", a
   assert.equal(programar.estadoActual, "pendiente");
   await new Promise((r) => setTimeout(r, 2600));
   assert.equal(programar.estadoActual, "no-disponible");
+});
+
+// El login con Google. En el iPhone con la app en la pantalla de inicio la
+// redireccion vuelve sin sesion (Safari no deja a Firebase recuperar el
+// resultado: authDomain no es el dominio de la app), asi que el popup va
+// siempre primero y la redireccion solo queda para cuando no hay popup.
+function authFalso(errorPopup) {
+  const llamadas = [];
+  return {
+    llamadas,
+    GoogleAuthProvider: class {},
+    signInWithPopup: async () => { llamadas.push("popup"); if (errorPopup) throw errorPopup; },
+    signInWithRedirect: async () => { llamadas.push("redireccion"); },
+  };
+}
+
+test("entrarConGoogle usa el popup tambien con la app en la pantalla de inicio", async () => {
+  const nav = globalThis.navigator;
+  if (nav) Object.defineProperty(nav, "standalone", { value: true, configurable: true });
+  try {
+    const m = authFalso();
+    await entrarConGoogle(m, {});
+    assert.deepEqual(m.llamadas, ["popup"]);
+  } finally {
+    if (nav) delete nav.standalone;
+  }
+});
+
+test("entrarConGoogle cae a la redireccion solo si no se puede abrir el popup", async () => {
+  for (const code of ["auth/popup-blocked", "auth/operation-not-supported-in-this-environment"]) {
+    const m = authFalso(Object.assign(new Error("x"), { code }));
+    await entrarConGoogle(m, {});
+    assert.deepEqual(m.llamadas, ["popup", "redireccion"], code);
+  }
+});
+
+test("entrarConGoogle no redirige si el usuario cierra el popup", async () => {
+  const m = authFalso(Object.assign(new Error("cerrado"), { code: "auth/popup-closed-by-user" }));
+  await assert.rejects(() => entrarConGoogle(m, {}), /cerrado/);
+  assert.deepEqual(m.llamadas, ["popup"]);
 });

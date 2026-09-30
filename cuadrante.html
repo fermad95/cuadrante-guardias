@@ -1884,26 +1884,6 @@ const CONFIG = {
 
 let sdkPromesa = null;
 
-// Modo standalone (app anadida a pantalla de inicio en iOS): ahi no existe
-// ventana para el popup, asi que el login tiene que ir por redireccion.
-// `navigator.standalone` es la propiedad de iOS; `display-mode: standalone`
-// cubre el resto. En una pestana normal de Safari (no standalone) el popup
-// SI funciona con un gesto directo del usuario, y conviene usarlo: el
-// redirect depende de que Firebase recupere el estado pendiente tras la
-// vuelta a traves de storage de terceros (authDomain distinto del dominio de
-// la app), que Safari puede bloquear por ITP — entonces getRedirectResult
-// no rechaza, simplemente vuelve sin sesion y sin error, como si "no hubiera
-// pasado nada". Verificado en vivo el 31/08/2026: en una pestana normal de
-// Safari en iPhone, el login por redireccion llega a ver la pantalla de
-// Google y confirma la cuenta, pero vuelve sin sesion iniciada.
-function esStandalone() {
-  return typeof navigator !== "undefined" && (
-    navigator.standalone === true
-    || (typeof window !== "undefined" && typeof window.matchMedia === "function"
-        && window.matchMedia("(display-mode: standalone)").matches)
-  );
-}
-
 function cargarSDK() {
   if (!sdkPromesa) {
     sdkPromesa = Promise.all([
@@ -1927,7 +1907,7 @@ function alCambiarSesion(fn, alErrorRedireccion) {
     f.authMod.onAuthStateChanged(f.auth, (u) => {
       fn(u ? { uid: u.uid, nombre: u.displayName, correo: u.email, foto: u.photoURL } : null);
     });
-    // Si venimos de un login por redireccion (iOS), la sesion se restaura
+    // Si venimos de un login por redireccion (sin popup), la sesion se restaura
     // igual por onAuthStateChanged, pero getRedirectResult cierra el flujo y
     // puede rechazar con el motivo real (dominio no autorizado, almacenamiento
     // bloqueado por Safari, etc.): se reporta en vez de descartarse en
@@ -1938,17 +1918,33 @@ function alCambiarSesion(fn, alErrorRedireccion) {
   });
 }
 
+// El login va siempre por popup, tambien con la app anadida a la pantalla de
+// inicio. La redireccion depende de que Firebase recupere el resultado a la
+// vuelta a traves de almacenamiento de terceros (authDomain, firebaseapp.com,
+// no es el dominio de la app), y Safari lo bloquea por ITP: getRedirectResult
+// no rechaza, simplemente se vuelve sin sesion y sin error. Verificado en
+// vivo en iPhone el 31/08/2026 en una pestana de Safari y el 30/09/2026 desde
+// el icono de la pantalla de inicio (se elige la cuenta, se cierra la ventana
+// de Google y la app sigue sin sesion). La redireccion queda solo como ultimo
+// recurso, para cuando el navegador no deja abrir el popup.
+const SIN_POPUP = ["auth/popup-blocked", "auth/operation-not-supported-in-this-environment"];
+
+// `authMod` es el modulo de Auth del SDK; va como parametro para poder
+// probar la eleccion popup/redireccion sin navegador.
+async function entrarConGoogle(authMod, auth) {
+  const proveedor = new authMod.GoogleAuthProvider();
+  try {
+    await authMod.signInWithPopup(auth, proveedor);
+  } catch (err) {
+    if (!err || !SIN_POPUP.includes(err.code)) throw err;
+    await authMod.signInWithRedirect(auth, proveedor); // recarga la pagina
+  }
+}
+
 async function iniciarSesion() {
   const f = await cargarSDK();
   if (!f) throw new Error("Sin conexion: no se puede iniciar sesion ahora mismo.");
-  const proveedor = new f.authMod.GoogleAuthProvider();
-  if (esStandalone()) {
-    // Solo aqui hace falta redireccion: en standalone no hay ventana donde
-    // abrir el popup.
-    await f.authMod.signInWithRedirect(f.auth, proveedor);
-    return; // la redireccion recarga la pagina; esto no llega a ejecutarse
-  }
-  await f.authMod.signInWithPopup(f.auth, proveedor);
+  await entrarConGoogle(f.authMod, f.auth);
 }
 
 async function cerrarSesion() {
