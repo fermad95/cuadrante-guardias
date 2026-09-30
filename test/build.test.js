@@ -2,6 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { construir, construirDocumento } from "../build.mjs";
+import { readFileSync } from "node:fs";
 
 test("el html generado es autocontenido", () => {
   const html = construir();
@@ -108,4 +109,17 @@ test("el bundle no lleva erratas de texto visibles", () => {
   for (const snake of ["sueldo_base", "bruto_total", "neto_base", "neto_guardias", "total_neto"]) {
     assert.ok(!html.includes(`<td>${snake}<`), `${snake} se muestra al usuario`);
   }
+});
+
+// El service worker guarda las librerias externas (Firebase, pdf.js) para que
+// carguen sin cobertura. Si alguien sube la version en el codigo y no en
+// sw.js, se guardaria la vieja y la app pediria la nueva sin red.
+test("sw.js guarda las mismas versiones de Firebase y pdf.js que usa la app", () => {
+  const sw = readFileSync(new URL("../sw.js", import.meta.url), "utf8");
+  const nube = readFileSync(new URL("../src/nube.js", import.meta.url), "utf8");
+  const pdf = readFileSync(new URL("../src/nomina-pdf.js", import.meta.url), "utf8");
+  const cdnFirebase = nube.match(/const CDN = "([^"]+)"/)[1];
+  const cdnPdf = pdf.match(/const CDN_PDFJS = "([^"]+)"/)[1];
+  assert.ok(sw.includes(`"${cdnFirebase}/"`), `sw.js no guarda ${cdnFirebase}`);
+  assert.ok(sw.includes(`"${cdnPdf}/"`), `sw.js no guarda ${cdnPdf}`);
 });

@@ -2130,8 +2130,12 @@ const CONFIG = {
 let sdkPromesa = null;
 
 // Si la carga falla (sin red), no se memoriza el fallo: la siguiente llamada
-// vuelve a intentarlo. Antes el primer fallo se quedaba para toda la sesion,
-// y una app abierta sin cobertura no volvia a sincronizar hasta recargarla.
+// vuelve a intentarlo. Ojo: eso solo sirve en Safari y Firefox. Chrome
+// recuerda el fallo de un import() hasta recargar la pagina (comprobado el
+// 30/09/2026 en Chrome 154), asi que lo que de verdad evita quedarse sin
+// nube es que el service worker (sw.js) guarde el SDK: con la copia guardada
+// carga siempre, haya o no cobertura. La version de CDN tiene que coincidir
+// con la de sw.js (lo vigila test/build.test.js).
 function cargarSDK() {
   if (!sdkPromesa) {
     const intento = Promise.all([

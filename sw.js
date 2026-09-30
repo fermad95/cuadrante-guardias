@@ -24,10 +24,25 @@ const RECURSOS = [
   "./icons/apple-touch-icon.png",
 ];
 
+// Librerias que la app carga de fuera: Firebase (sesion y copia en la nube) y
+// pdf.js (leer las nominas). Llevan la version en la direccion, asi que su
+// contenido no cambia nunca y se pueden guardar para siempre. Hace falta
+// guardarlas: si la app se abre sin cobertura y Firebase no carga, Chrome
+// recuerda ese fallo hasta recargar la pagina (no sirve reintentar), y la app
+// se quedaba sin sincronizar aunque volviera la conexion. Con la copia
+// guardada, Firebase carga siempre y la sincronizacion se reanuda sola.
+// La version tiene que ser la misma que en src/nube.js y src/nomina-pdf.js
+// (lo vigila test/build.test.js).
+const FIREBASE = "https://www.gstatic.com/firebasejs/10.13.2/";
+const EXTERNAS = [FIREBASE, "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.7.76/"];
+const SDK = ["firebase-app.js", "firebase-auth.js", "firebase-firestore.js"].map((f) => FIREBASE + f);
+
 self.addEventListener("install", (ev) => {
   ev.waitUntil(
     caches.open(CACHE)
-      .then((c) => c.addAll(RECURSOS))
+      // El SDK se intenta guardar ya, pero si falla no impide instalar: se
+      // guardara la primera vez que la app lo pida.
+      .then((c) => c.addAll(RECURSOS).then(() => c.addAll(SDK).catch(() => {})))
       .then(() => self.skipWaiting())
   );
 });
@@ -71,6 +86,19 @@ self.addEventListener("fetch", (ev) => {
   const req = ev.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
+  if (EXTERNAS.some((prefijo) => req.url.startsWith(prefijo))) {
+    ev.respondWith(
+      caches.match(req).then((enCache) =>
+        enCache || fetch(req).then((resp) => {
+          if (!resp.ok) return resp;
+          const copia = resp.clone();
+          ev.waitUntil(caches.open(CACHE).then((c) => c.put(req, copia)));
+          return resp;
+        })
+      )
+    );
+    return;
+  }
   if (url.origin !== self.location.origin) return;
 
   // Navegacion: red primero, cache como respaldo sin conexion.
