@@ -29,6 +29,10 @@ const LUGARES = [
   { sigla: "DSS", nombre: "Deccu Sector Sur" },
   { sigla: "DCP", nombre: "Deccu Castilla del Pino" },
 ];
+// Dias que suelen pagarse a tarifa doble (festivo especial). La app no los
+// marca sola porque no esta confirmado con una nomina cuales paga el SAS asi:
+// solo avisa si hay una guardia en ellos calculada a tarifa normal.
+const DIAS_TARIFA_DOBLE = ["12-24", "12-25", "12-31", "01-01", "01-06"];
 const HORAS_TIPO = { laborable: "laborables", sdf: "festivas", especial: "de festivo especial" };
 
 // Los lugares de guardia de cada hospital: por defecto los de arriba, y cada
@@ -355,6 +359,7 @@ export function iniciar(raiz, almacen) {
     const hueco = (diaSemana(dias[0]) + 6) % 7; // lunes primero
     const celdas = ['<div aria-hidden="true"></div>'.repeat(hueco)];
     const hoy = hoyISO();
+    const sinMarcarEspecial = new Set();
     for (const fecha of dias) {
       const g = estado.guardias[fecha];
       const num = Number(fecha.slice(8));
@@ -364,6 +369,9 @@ export function iniciar(raiz, almacen) {
       if (g) {
         const r = calcularGuardia({ ...g, fecha }, estado.festivos, configConPrecios(estado));
         const tipos = [...new Set(r.tramos.map((t) => t.tipo))];
+        for (const t of r.tramos) {
+          if (t.tipo !== "especial" && DIAS_TARIFA_DOBLE.includes(t.fecha.slice(5))) sinMarcarEspecial.add(t.fecha);
+        }
         clases += ` ${tipos[0]}`;
         if (!g.hecha) clases += " prevista";
         detalle = `<span class="horas">${g.horas}h</span>`;
@@ -399,6 +407,10 @@ export function iniciar(raiz, almacen) {
         <div class="rejilla">${celdas.join("")}</div>
         <p class="aviso">Las guardias con borde punteado aún no están marcadas como
           realizadas: cuentan como previsión.</p>
+        ${sinMarcarEspecial.size > 0 ? `<p class="aviso"><strong>Ojo:</strong> tienes guardia el
+          ${[...sinMarcarEspecial].sort().map((f) => esc(f.split("-").reverse().join("/"))).join(", ")} y está
+          calculada a tarifa normal. Si el SAS te paga ese día a tarifa doble, márcalo como «especial» en la
+          pestaña Festivos (el 24 y el 31 de diciembre hay que añadirlos antes como festivo).</p>` : ""}
       </div>
       <div class="tarjeta">
         <strong class="etiqueta">Resumen de ${MESES[mes - 1]}</strong>
@@ -983,12 +995,23 @@ export function iniciar(raiz, almacen) {
       if (b.id === "a-iniciar-sesion") {
         b.disabled = true;
         b.textContent = "Abriendo Google…";
-        iniciarSesion().catch((err) => {
-          caja.querySelector("#a-error").textContent = err.message
-            || "No se ha podido iniciar sesión. Inténtalo de nuevo.";
-          b.disabled = false;
-          b.textContent = "Iniciar sesión con Google";
-        });
+        // Se busca el boton de nuevo cada vez: Ajustes puede haberse
+        // repintado entre tanto y `b` ya no seria el que esta en pantalla.
+        const liberar = (mensaje) => {
+          const boton = caja.querySelector("#a-iniciar-sesion");
+          if (!boton || sesion) return;
+          boton.disabled = false;
+          boton.textContent = "Iniciar sesión con Google";
+          const error = caja.querySelector("#a-error");
+          if (error) error.textContent = mensaje;
+        };
+        // En el movil la ventana de Google puede cerrarse sin que el navegador
+        // avise: el boton no puede quedarse en "Abriendo Google…" para siempre.
+        const plazo = setTimeout(() => liberar("Google no ha contestado. Si la ventana se ha cerrado, "
+          + "vuelve a pulsar el botón."), 20000);
+        iniciarSesion()
+          .catch((err) => liberar(err.message || "No se ha podido iniciar sesión. Inténtalo de nuevo."))
+          .finally(() => clearTimeout(plazo));
       }
       else if (b.id === "a-cerrar-sesion") {
         // Antes de salir se sube lo que quede pendiente (con un tope, por si
