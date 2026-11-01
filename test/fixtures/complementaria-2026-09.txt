@@ -1,0 +1,249 @@
+Tip.nóm.emisión:
+ 
+Complementaria
+ 
+Fecha emisión:
+ 
+2026-10
+ 
+Periodo liquidación:
+ 
+01/09/2026 al 30/09/2026
+
+Tip.nóm.afectación:
+ 
+Complementaria
+ 
+Fecha afectación:
+ 
+2026-09
+ 
+Días Nómina:
+ 
+Porcentaje abono:
+ 
+100,00 %
+
+Clave
+ 
+Denominación conceptos
+ 
+Devengos
+ 
+Base
+ 
+Porcentaje
+ 
+Descuentos
+
+024
+
+025
+
+173
+
+JORN.COMPLEMENTARIA
+
+JORN.COMPLT.SB-DM-FE
+
+JOR.COMPL.F.ESPECIAL
+
+703,50
+
+631,20
+
+450,24
+
+001
+
+002
+
+003
+
+011
+
+I.R.P.F.
+
+COTIZACIÓN DESEMPLEO
+
+FORMACIÓN PROFES.
+
+COTIZAC.REG.GRAL.S.S
+
+1.784,94
+
+1.784,70
+
+1.784,70
+
+1.405,50
+
+10,12
+
+1,60
+
+0,10
+
+4,85
+
+180,64
+
+28,56
+
+1,78
+
+68,17
+
+Total devengos: 1784,94
+ 
+Total descuentos: 279,15
+
+Líquido a percibir:
+ 
+1505,79
+
+Dias afectados
+
+Clave
+ 
+Denominación día
+ 
+Número de días
+
+LI
+ 
+Días de Liquidación
+
+Cotizaciones
+
+Clave
+ 
+Aportación de la empresa
+ 
+Base
+ 
+Tipo
+ 
+Cuota
+
+01
+
+31
+
+32
+
+51
+
+71
+
+CONTINGENCIAS COMUNES
+
+CNAE/EPI INCAPACIDAD TEMPORAL
+
+CNAE/EPI INVALIDEZ, MUERTE Y SUPERVIVENCIA (IMS)
+
+DESEMPLEO
+
+FORMACIÓN PROFESIONAL
+
+1.405,50
+
+1.784,70
+
+1.784,70
+
+1.784,70
+
+1.784,70
+
+24,35
+
+0,80
+
+0,70
+
+6,70
+
+0,60
+
+342,24
+
+14,28
+
+12,49
+
+119,57
+
+10,71
+
+Total empresa:
+ 
+499,29
+
+Incidencias
+
+Clave
+ 
+Denominación incidencia
+ 
+Periodo
+ 
+Valor 1
+ 
+Valor 2
+
+I0310
+
+I0312
+
+I0314
+
+HORAS J.C. FÍSICA LAB.
+
+HORAS J.C. FÍSICA FES.
+
+HORAS J.C. FÍSICA FES. ESP.
+
+06-09-2026 - 24-09-2026
+
+06-09-2026 - 19-09-2026
+
+08-09-2026 - 08-09-2026
+
+50 Horas
+
+40 Horas
+
+16 Horas
+
+0 20% Horas EAYDC
+
+0 20% Horas EAYDC
+
+0 20% Horas EAYDC
+
+Importe unitario
+
+Clave
+ 
+Denominación conceptos
+ 
+Importe
+
+024
+
+025
+
+173
+
+JORN.COMPLEMENTARIA
+
+JORN.COMPLT.SB-DM-FE
+
+JOR.COMPL.F.ESPECIAL
+
+14,07
+
+15,78
+
+28,14

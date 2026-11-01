@@ -5,9 +5,11 @@ import { retribucionFija, anioResidenciaEn, retribucionesDe } from "./tarifas.js
 
 // La mas reciente, no la media: el IRPF se recalcula cada anio y sube con el anio
 // de residencia, asi que promediar una nomina de R1 con una de R3 da un tipo que no
-// describe a ninguna de las dos.
-function tipoReciente(nominas, clase) {
-  const suyas = nominas.filter((n) => n.clase === clase && n.bruto > 0);
+// describe a ninguna de las dos. Con `hasta` (AAAA-MM) solo cuentan las nominas
+// de ese mes o anteriores: una subida del IRPF vale desde su mes y no mueve la
+// prevision de los meses de antes.
+function tipoReciente(nominas, clase, hasta = null) {
+  const suyas = nominas.filter((n) => n.clase === clase && n.bruto > 0 && (!hasta || n.periodo <= hasta));
   if (suyas.length === 0) return null;
   let mejor = suyas[0];
   for (const n of suyas) {
@@ -16,9 +18,9 @@ function tipoReciente(nominas, clase) {
   return Math.round(((mejor.bruto - mejor.neto) / mejor.bruto) * 1e6) / 1e6;
 }
 
-export function tiposEfectivos(nominas, config) {
-  const base = tipoReciente(nominas, "base");
-  const guardias = tipoReciente(nominas, "guardias");
+export function tiposEfectivos(nominas, config, hasta = null) {
+  const base = tipoReciente(nominas, "base", hasta);
+  const guardias = tipoReciente(nominas, "guardias", hasta);
   return {
     base: base === null ? config.retencionBase : base,
     guardias: guardias === null ? config.retencionGuardias : guardias,
@@ -112,9 +114,10 @@ export function pagaExtraPrevista(anioMes, config) {
 // Seguridad Social en su mes (va prorrateada en las bases mensuales), solo
 // retiene IRPF. Sin ese dato se usa el tipo total de la base, que es mayor:
 // mejor quedarse corto que prometer de mas.
-function tipoIrpfBase(nominas, config) {
-  const suyas = nominas.filter((n) => n.clase === "base" && n.bruto > 0 && typeof n.irpf === "number");
-  if (suyas.length === 0) return tiposEfectivos(nominas, config).base;
+function tipoIrpfBase(nominas, config, hasta = null) {
+  const suyas = nominas.filter((n) => n.clase === "base" && n.bruto > 0 && typeof n.irpf === "number"
+    && (!hasta || n.periodo <= hasta));
+  if (suyas.length === 0) return tiposEfectivos(nominas, config, hasta).base;
   let mejor = suyas[0];
   for (const n of suyas) if (n.periodo >= mejor.periodo) mejor = n;
   return mejor.irpf / mejor.bruto;
@@ -133,7 +136,7 @@ export function fraccionDeResidencia(anioMes, inicioResidencia) {
 }
 
 export function resumenMes(anioMes, estado) {
-  const tipos = tiposEfectivos(estado.nominas, estado.config);
+  const tipos = tiposEfectivos(estado.nominas, estado.config, anioMes);
   const inicio = estado.config.inicioResidencia;
   // El anio de residencia del mes es el del dia 15, salvo en el mes en que
   // se empieza, que es R1 aunque el inicio caiga despues del 15.
@@ -169,7 +172,7 @@ export function resumenMes(anioMes, estado) {
   const netoBase = nominaBase
     ? nominaBase.neto
     : redondear(aplicarRetencion(brutoBase, tipos.base).neto
-      + aplicarRetencion(pagaExtra, tipoIrpfBase(estado.nominas, estado.config)).neto);
+      + aplicarRetencion(pagaExtra, tipoIrpfBase(estado.nominas, estado.config, anioMes)).neto);
   const netoGuardias = nominaGuardias
     ? nominaGuardias.neto : aplicarRetencion(brutoGuardias, tipos.guardias).neto;
 
@@ -340,8 +343,10 @@ function preciosDeNominas(estado) {
   return mapa;
 }
 
+// Tambien activa el horario de liquidacion del SAS (motor.js): la app calcula
+// lo que va a pagar la nomina, no las horas de reloj.
 export function configConPrecios(estado) {
-  return { ...estado.config, preciosNomina: preciosDeNominas(estado) };
+  return { ...estado.config, horarioSAS: estado.config.horarioSAS !== false, preciosNomina: preciosDeNominas(estado) };
 }
 
 // Compara los precios de la ultima complementaria con la tabla con la que la

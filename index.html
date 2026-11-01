@@ -704,6 +704,20 @@ function clasificarDia(fechaISO, excepciones = {}) {
   return dia === 0 || dia === 6 ? "sdf" : "laborable";
 }
 
+// Las fiestas locales se pagan a tarifa doble (festivo especial): lo
+// demuestra la complementaria de octubre de 2026, que liquido una fiesta
+// local de septiembre como JOR.COMPL.F.ESPECIAL a 28,14 EUR/h. Las altas
+// locales guardadas antes como S-D-F pasan a especial una sola vez; despues,
+// si alguien marca una local como S-D-F a proposito, se respeta.
+function localesComoEspecial(excepciones = {}) {
+  const fuera = {};
+  for (const [fecha, exc] of Object.entries(excepciones)) {
+    const local = exc && exc.nombre && !derivadosDe(Number(fecha.slice(0, 4)))[fecha];
+    fuera[fecha] = local && exc.clase === "sdf" ? { ...exc, clase: "especial" } : exc;
+  }
+  return fuera;
+}
+
 function calendarioDe(anio, excepciones = {}) {
   // Se copia porque derivadosDe devuelve siempre la misma referencia cacheada:
   // sin la copia, una reclasificacion contaminaria las llamadas siguientes.
@@ -794,9 +808,10 @@ function partirGuardia(guardia, festivos, opciones = {}) {
 // menos, y agosto 2026 (domingo 2, 09:00-08:00) 1h festiva mas. Con esta regla
 // las dos cuadran a la hora: 60+32 y 59+16.
 //
-// La app calcula siempre con el horario real (lo que se debe cobrar); este
-// horario solo se usa para explicar por que la nomina paga distinto. Por eso
-// `horarioSAS` es una opcion interna de calculo, no un ajuste guardado.
+// La app liquida como el SAS para que cuadre siempre con la nomina (decision
+// del usuario, 01/11/2026): configConPrecios (nomina.js) lo activa en todos
+// los calculos de la app. Aqui sigue siendo una opcion para poder calcular
+// tambien el horario real (`horarioSAS: false`).
 const NUEVE = 9 * 60;
 const OCHO = 8 * 60;
 
@@ -833,9 +848,11 @@ function calcularGuardia(guardia, festivos, config) {
 
 // La mas reciente, no la media: el IRPF se recalcula cada anio y sube con el anio
 // de residencia, asi que promediar una nomina de R1 con una de R3 da un tipo que no
-// describe a ninguna de las dos.
-function tipoReciente(nominas, clase) {
-  const suyas = nominas.filter((n) => n.clase === clase && n.bruto > 0);
+// describe a ninguna de las dos. Con `hasta` (AAAA-MM) solo cuentan las nominas
+// de ese mes o anteriores: una subida del IRPF vale desde su mes y no mueve la
+// prevision de los meses de antes.
+function tipoReciente(nominas, clase, hasta = null) {
+  const suyas = nominas.filter((n) => n.clase === clase && n.bruto > 0 && (!hasta || n.periodo <= hasta));
   if (suyas.length === 0) return null;
   let mejor = suyas[0];
   for (const n of suyas) {
@@ -844,9 +861,9 @@ function tipoReciente(nominas, clase) {
   return Math.round(((mejor.bruto - mejor.neto) / mejor.bruto) * 1e6) / 1e6;
 }
 
-function tiposEfectivos(nominas, config) {
-  const base = tipoReciente(nominas, "base");
-  const guardias = tipoReciente(nominas, "guardias");
+function tiposEfectivos(nominas, config, hasta = null) {
+  const base = tipoReciente(nominas, "base", hasta);
+  const guardias = tipoReciente(nominas, "guardias", hasta);
   return {
     base: base === null ? config.retencionBase : base,
     guardias: guardias === null ? config.retencionGuardias : guardias,
@@ -940,9 +957,10 @@ function pagaExtraPrevista(anioMes, config) {
 // Seguridad Social en su mes (va prorrateada en las bases mensuales), solo
 // retiene IRPF. Sin ese dato se usa el tipo total de la base, que es mayor:
 // mejor quedarse corto que prometer de mas.
-function tipoIrpfBase(nominas, config) {
-  const suyas = nominas.filter((n) => n.clase === "base" && n.bruto > 0 && typeof n.irpf === "number");
-  if (suyas.length === 0) return tiposEfectivos(nominas, config).base;
+function tipoIrpfBase(nominas, config, hasta = null) {
+  const suyas = nominas.filter((n) => n.clase === "base" && n.bruto > 0 && typeof n.irpf === "number"
+    && (!hasta || n.periodo <= hasta));
+  if (suyas.length === 0) return tiposEfectivos(nominas, config, hasta).base;
   let mejor = suyas[0];
   for (const n of suyas) if (n.periodo >= mejor.periodo) mejor = n;
   return mejor.irpf / mejor.bruto;
@@ -961,7 +979,7 @@ function fraccionDeResidencia(anioMes, inicioResidencia) {
 }
 
 function resumenMes(anioMes, estado) {
-  const tipos = tiposEfectivos(estado.nominas, estado.config);
+  const tipos = tiposEfectivos(estado.nominas, estado.config, anioMes);
   const inicio = estado.config.inicioResidencia;
   // El anio de residencia del mes es el del dia 15, salvo en el mes en que
   // se empieza, que es R1 aunque el inicio caiga despues del 15.
@@ -997,7 +1015,7 @@ function resumenMes(anioMes, estado) {
   const netoBase = nominaBase
     ? nominaBase.neto
     : redondear(aplicarRetencion(brutoBase, tipos.base).neto
-      + aplicarRetencion(pagaExtra, tipoIrpfBase(estado.nominas, estado.config)).neto);
+      + aplicarRetencion(pagaExtra, tipoIrpfBase(estado.nominas, estado.config, anioMes)).neto);
   const netoGuardias = nominaGuardias
     ? nominaGuardias.neto : aplicarRetencion(brutoGuardias, tipos.guardias).neto;
 
@@ -1168,8 +1186,10 @@ function preciosDeNominas(estado) {
   return mapa;
 }
 
+// Tambien activa el horario de liquidacion del SAS (motor.js): la app calcula
+// lo que va a pagar la nomina, no las horas de reloj.
 function configConPrecios(estado) {
-  return { ...estado.config, preciosNomina: preciosDeNominas(estado) };
+  return { ...estado.config, horarioSAS: estado.config.horarioSAS !== false, preciosNomina: preciosDeNominas(estado) };
 }
 
 // Compara los precios de la ultima complementaria con la tabla con la que la
@@ -1363,6 +1383,9 @@ function clasificarDevengo(nombre) {
   }
   if (/^JORN\.?\s*COMPLEMENTARIA$/.test(n)) return { tipo: "guardia", dia: "laborable" };
   if (/^JORN\.?\s*COMPLT\.?\s*SB-?DM-?FE$/.test(n)) return { tipo: "guardia", dia: "sdf" };
+  // Festivo especial (tarifa doble): "JOR.COMPL.F.ESPECIAL", visto en la
+  // complementaria de octubre de 2026 por una fiesta local.
+  if (/^JORN?\.?\s*COMPL\.?\s*F\.?\s*ESPECIAL$/.test(n)) return { tipo: "guardia", dia: "especial" };
   if (/^SUELDO$/.test(n)) return { tipo: "sueldo" };
   // Paga extraordinaria de junio o diciembre ("PAGA EXTRA", "P.EXTRA JUNIO",
   // "PAGA EXTRAORDINARIA"...): es parte de la nomina base, no un concepto raro.
@@ -1536,6 +1559,8 @@ function estadoInicial() {
       retencionBase: 0.089753,
       retencionGuardias: 0.032609,
       retribuciones: null,
+      // Ya se han pasado las fiestas locales a festivo especial (ver festivos.js).
+      localesEspeciales: true,
       tema: "espacial", // "sobrio" | "espacial"
     },
     guardias: {},
@@ -1612,7 +1637,7 @@ function sanearConfig(config) {
   if (c.inicioResidencia != null && !(typeof c.inicioResidencia === "string" && ES_FECHA.test(c.inicioResidencia))) {
     c.inicioResidencia = null;
   }
-  for (const k of ["cortarAMedianoche", "especialCortaAMedianoche"]) {
+  for (const k of ["cortarAMedianoche", "especialCortaAMedianoche", "localesEspeciales"]) {
     if (typeof c[k] !== "boolean") c[k] = inicial[k];
   }
   for (const k of ["retencionBase", "retencionGuardias"]) {
@@ -1668,11 +1693,12 @@ function importarEstado(texto) {
   const config = sanearConfig(base.config);
   delete config.tema;
 
-  const festivos = {};
+  let festivos = {};
   for (const [fecha, f] of Object.entries(base.festivos || {})) {
     if (festivoValido(fecha, f)) festivos[fecha] = f;
     else descartadas += 1;
   }
+  if (dato.config.localesEspeciales !== true) festivos = localesComoEspecial(festivos);
 
   return {
     ok: true,
@@ -1736,12 +1762,14 @@ function mismaData(a, b) {
 function normalizar(dato) {
   const inicial = estadoInicial();
   const mapa = (x) => (x && typeof x === "object" && !Array.isArray(x) ? x : {});
+  const festivos = Object.fromEntries(Object.entries(mapa(dato.festivos)).filter(([f, x]) => festivoValido(f, x)));
+  const yaEspeciales = dato.config && dato.config.localesEspeciales === true;
   return {
     ...inicial,
     ...dato,
     config: sanearConfig(dato.config),
     guardias: Object.fromEntries(Object.entries(mapa(dato.guardias)).filter(([f, g]) => guardiaValida(f, g))),
-    festivos: Object.fromEntries(Object.entries(mapa(dato.festivos)).filter(([f, x]) => festivoValido(f, x))),
+    festivos: yaEspeciales ? festivos : localesComoEspecial(festivos),
     nominas: (Array.isArray(dato.nominas) ? dato.nominas : []).filter(nominaValida),
     actualizadoEn: Number(dato.actualizadoEn) || 0,
   };
@@ -2843,7 +2871,8 @@ function iniciar(raiz, almacen) {
     return `<div class="tarjeta">
       <strong class="etiqueta">Festivos de ${anio}</strong>
       <table>${filas}</table>
-      <p class="aviso">Marca como especial los que se retribuyan a la tarifa doble.
+      <p class="aviso">Marca como especial los que se retribuyan a la tarifa doble. Las fiestas
+        locales lo son (así las paga el SAS) y se añaden ya como especial.
         Tienes ${locales} festivo${locales === 1 ? "" : "s"} local${locales === 1 ? "" : "es"}
         dado${locales === 1 ? "" : "s"} de alta para ${anio}; cada municipio tiene dos.</p>
       <p class="etiqueta-campo">Añadir festivo local</p>
@@ -3138,11 +3167,10 @@ function iniciar(raiz, almacen) {
         <table style="margin-top:.75rem">${tramos}
           <tr><td class="total">bruto</td><td class="cifra total">${eur(r.bruto)}</td></tr></table>
         ${(() => {
-          const sas = calcularGuardia({ ...g, fecha }, estado.festivos, { ...configConPrecios(estado), horarioSAS: true });
-          const d = redondear(sas.bruto - r.bruto);
-          return d === 0 ? "" : `<p class="aviso">Aquí se calculan las ${g.horas}h que haces. Ojo: el SAS
-            suele liquidar estas guardias de 08:00 a 08:00, y con eso pagaría ${eur(Math.abs(d))}
-            ${d > 0 ? "más" : "menos"}${d < 0 ? ": compáralo con la nómina y reclama la diferencia" : ""}.</p>`;
+          const liquidada = horarioLiquidado(g);
+          return liquidada.inicio === g.inicio && liquidada.horas === g.horas ? "" : `<p class="aviso">Haces
+            ${g.horas}h desde las ${esc(g.inicio)}, pero el SAS liquida de 08:00 a 08:00: se calcula como
+            ${liquidada.horas}h desde las ${liquidada.inicio}, que es lo que paga la nómina.</p>`;
         })()}
         <div class="acciones-modal">
           <button class="peligro" id="m-borrar">Borrar</button>
@@ -3497,7 +3525,7 @@ function iniciar(raiz, almacen) {
       const fecha = raiz.querySelector("#f-fecha").value;
       const nombre = raiz.querySelector("#f-nombre").value.trim();
       if (/^\d{4}-\d{2}-\d{2}$/.test(fecha) && nombre) {
-        estado.festivos[fecha] = { nombre, clase: "sdf" };
+        estado.festivos[fecha] = { nombre, clase: "especial" };
         if (!raiz.querySelector("#f-repetir").checked) estado.festivos[fecha].repetir = false;
         persistir(); pintar();
       }

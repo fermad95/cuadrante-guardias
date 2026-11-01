@@ -58,25 +58,33 @@ test("sin horario SAS se mantiene el calculo por horario real de antes", () => {
   assert.equal(resumenMes("2026-08", e).brutoGuardias, 1066.83);
 });
 
-test("por defecto se calculan las horas reales, no el horario del SAS", () => {
+test("por defecto la app liquida con el horario del SAS, para cuadrar con la nomina", () => {
   assert.equal(estadoInicial().config.horarioSAS, undefined);
-  assert.equal(resumenMes("2026-08", estadoReal()).brutoGuardias, 1066.83);
+  assert.equal(resumenMes("2026-07", estadoReal()).brutoGuardias, 1349.16);
+  assert.equal(resumenMes("2026-08", estadoReal()).brutoGuardias, 1082.61);
 });
 
-test("contraste agosto: el SAS pago 1h festiva mas que las hechas, por su horario 08-08", () => {
+test("contraste agosto: con el horario del SAS cuadra a la hora", () => {
   const e = estadoReal();
   e.nominas = [nominaPdf("complementaria-2026-08")];
   const c = contrasteGuardias("2026-08", e);
-  assert.equal(c.cuadra, false);
-  assert.deepEqual(c.diferencias, { sdf: 1 });
-  assert.equal(c.diferenciaImporte, 15.78);
-  assert.equal(c.porHorarioSAS, true);
+  assert.equal(c.cuadra, true);
+  assert.deepEqual(c.diferencias, {});
+  assert.equal(c.diferenciaImporte, 0);
   assert.equal(c.prorrataVacaciones, 599.30);
   assert.equal(c.diasVacaciones, 15);
 });
 
-test("contraste julio: el SAS pago 1h festiva menos (15,78 EUR a reclamar)", () => {
+test("contraste julio: con el horario del SAS cuadra a la hora", () => {
   const e = estadoReal();
+  e.nominas = [nominaPdf("complementaria-2026-07")];
+  const c = contrasteGuardias("2026-07", e);
+  assert.equal(c.cuadra, true);
+  assert.equal(c.diferenciaImporte, 0);
+});
+
+test("contraste con horario real (horarioSAS: false): el SAS pago 1h festiva menos en julio", () => {
+  const e = estadoReal({ horarioSAS: false });
   e.nominas = [nominaPdf("complementaria-2026-07")];
   const c = contrasteGuardias("2026-07", e);
   assert.deepEqual(c.diferencias, { sdf: -1 });
@@ -90,7 +98,7 @@ test("contraste: si falta una guardia en el calendario, se ve la diferencia de h
   e.nominas = [nominaPdf("complementaria-2026-08")];
   const c = contrasteGuardias("2026-08", e);
   assert.equal(c.cuadra, false);
-  assert.deepEqual(c.diferencias, { laborable: 17, sdf: 1 });
+  assert.deepEqual(c.diferencias, { laborable: 17 });
   assert.equal(c.porHorarioSAS, false);
 });
 
@@ -194,8 +202,8 @@ test("resumen anual: 14 pagas (12 mensualidades + 2 extra)", () => {
   assert.equal(r.bruto, Math.round((13 * 1379.9 + 1490.28) * 100) / 100);
 });
 
-test("diferencias con el SAS: julio te deben 15,78, agosto 15,78 de mas, saldo 0; marcar reclamada", () => {
-  const e = estadoReal();
+test("diferencias con el SAS (horario real): julio te deben 15,78, agosto 15,78 de mas, saldo 0; marcar reclamada", () => {
+  const e = estadoReal({ horarioSAS: false });
   e.nominas = [nominaPdf("complementaria-2026-07"), nominaPdf("complementaria-2026-08")];
   let r = diferenciasConSAS(e);
   assert.deepEqual(r.filas.map((f) => [f.periodo, f.diferencia]), [["2026-07", -15.78], ["2026-08", 15.78]]);
@@ -273,4 +281,81 @@ test("CSV anual: formato Excel en espanol y cifras reales de las nominas", () =>
   const septiembre = lineas.find((l) => l.startsWith("2026-09;")).split(";");
   assert.equal(septiembre[13], "1182,78");
   assert.ok(lineas[13].startsWith("Total 2026;"));
+});
+
+// Complementaria de octubre de 2026 (liquida septiembre): el SAS pago la
+// fiesta local del 8 de septiembre como festivo especial, 16h a 28,14.
+import { localesComoEspecial } from "../src/festivos.js";
+import { aplicarRetencion } from "../src/nomina.js";
+
+const GUARDIAS_SEPTIEMBRE = {
+  "2026-09-06": { horas: 23, inicio: "09:00", hecha: true }, // domingo
+  "2026-09-08": { horas: 23, inicio: "09:00", hecha: true }, // martes, fiesta local
+  "2026-09-15": { horas: 17, inicio: "15:00", hecha: true },
+  "2026-09-19": { horas: 24, inicio: "09:00", hecha: true }, // sabado
+  "2026-09-24": { horas: 17, inicio: "15:00", hecha: true },
+};
+
+test("septiembre 2026: con la fiesta local especial y el horario del SAS cuadra al centimo", () => {
+  const e = estadoReal();
+  e.guardias = structuredClone(GUARDIAS_SEPTIEMBRE);
+  e.festivos = { "2026-09-08": { nombre: "Fiesta local", clase: "especial" } };
+  const r = resumenMes("2026-09", e);
+  assert.deepEqual(r.horasPorTipo, { laborable: 50, sdf: 40, especial: 16 });
+  assert.equal(r.brutoGuardias, 1784.94);
+  e.nominas = [nominaPdf("complementaria-2026-09")];
+  const c = contrasteGuardias("2026-09", e);
+  assert.equal(c.cuadra, true);
+  assert.equal(c.diferenciaImporte, 0);
+});
+
+test("el lector reconoce las horas de festivo especial (JOR.COMPL.F.ESPECIAL)", () => {
+  const n = nominaPdf("complementaria-2026-09");
+  assert.deepEqual(n.desglose.horas, { laborable: 50, sdf: 40, especial: 16 });
+  assert.equal(n.desglose.precios.especial, 28.14);
+  assert.equal(n.desglose.guardias, 1784.94);
+  assert.equal(n.irpf, 180.64);
+});
+
+test("las fiestas locales guardadas como S-D-F pasan a especial una sola vez", () => {
+  const antiguo = estadoReal();
+  delete antiguo.config.localesEspeciales;
+  antiguo.festivos = {
+    "2026-09-08": { nombre: "Fiesta local", clase: "sdf" },
+    "2026-10-24": { nombre: "Otra local", clase: "sdf", repetir: false },
+    "2026-12-08": { clase: "especial" }, // reclasificacion de un nacional: no se toca
+    "2026-11-02": { clase: "laborable" },
+  };
+  const n = normalizar(JSON.parse(JSON.stringify(antiguo)));
+  assert.equal(n.festivos["2026-09-08"].clase, "especial");
+  assert.deepEqual(n.festivos["2026-10-24"], { nombre: "Otra local", clase: "especial", repetir: false });
+  assert.deepEqual(n.festivos["2026-12-08"], { clase: "especial" });
+  assert.deepEqual(n.festivos["2026-11-02"], { clase: "laborable" });
+  assert.equal(n.config.localesEspeciales, true);
+  assert.equal(importarEstado(JSON.stringify(antiguo)).estado.festivos["2026-09-08"].clase, "especial");
+  // Ya migrado, una local marcada a mano como S-D-F se respeta.
+  n.festivos["2026-09-08"].clase = "sdf";
+  assert.equal(normalizar(JSON.parse(JSON.stringify(n))).festivos["2026-09-08"].clase, "sdf");
+  assert.equal(importarEstado(JSON.stringify(n)).estado.festivos["2026-09-08"].clase, "sdf");
+  assert.deepEqual(localesComoEspecial({}), {});
+});
+
+test("una subida del IRPF vale desde su mes: los meses anteriores no se mueven", () => {
+  const e = estadoReal();
+  e.guardias = { ...structuredClone(GUARDIAS), "2026-10-05": { horas: 17, inicio: "15:00" } };
+  const julio = nominaPdf("complementaria-2026-07");
+  const septiembre = nominaPdf("complementaria-2026-09");
+  e.nominas = [julio, septiembre];
+  const tasa = (n) => Math.round(((n.bruto - n.neto) / n.bruto) * 1e6) / 1e6;
+  // Agosto no tiene nomina: se preve con la de julio, no con la de septiembre.
+  const agosto = resumenMes("2026-08", e);
+  assert.equal(agosto.netoGuardias, aplicarRetencion(agosto.brutoGuardias, tasa(julio)).neto);
+  const octubre = resumenMes("2026-10", e);
+  assert.equal(octubre.netoGuardias, aplicarRetencion(octubre.brutoGuardias, tasa(septiembre)).neto);
+  // Base: noviembre con la Normal de octubre; septiembre ya tiene la suya.
+  e.nominas = [nominaPdf("normal-2026-09"), nominaPdf("normal-2026-10")];
+  assert.equal(resumenMes("2026-09", e).netoBase, 1182.78);
+  assert.equal(resumenMes("2026-11", e).netoBase, aplicarRetencion(1379.9, tasa(e.nominas[1])).neto);
+  // Antes de cualquier nomina, el tipo por defecto de Ajustes.
+  assert.equal(resumenMes("2026-08", e).netoBase, aplicarRetencion(1379.9, e.config.retencionBase).neto);
 });

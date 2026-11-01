@@ -1,6 +1,6 @@
 // src/ui.js
 import { diasDelMes, diaSemana, redondear } from "./fechas.js";
-import { sugerenciaPara, calcularGuardia } from "./motor.js";
+import { sugerenciaPara, calcularGuardia, horarioLiquidado } from "./motor.js";
 import { resumenMes, resumenAnio, tiposEfectivos, historialTipos, ingresoDelMes, contrasteGuardias, nominaDe, diferenciasConSAS, configConPrecios, tarifasDesfasadas, csvAnual } from "./nomina.js";
 import { extraerTextoPdf, parsearNomina } from "./nomina-pdf.js";
 import { CLAVE, cargar, guardar, estadoInicial, importarEstado, mismaData, guardarPrevio, cargarPrevio } from "./estado.js";
@@ -509,7 +509,8 @@ export function iniciar(raiz, almacen) {
     return `<div class="tarjeta">
       <strong class="etiqueta">Festivos de ${anio}</strong>
       <table>${filas}</table>
-      <p class="aviso">Marca como especial los que se retribuyan a la tarifa doble.
+      <p class="aviso">Marca como especial los que se retribuyan a la tarifa doble. Las fiestas
+        locales lo son (así las paga el SAS) y se añaden ya como especial.
         Tienes ${locales} festivo${locales === 1 ? "" : "s"} local${locales === 1 ? "" : "es"}
         dado${locales === 1 ? "" : "s"} de alta para ${anio}; cada municipio tiene dos.</p>
       <p class="etiqueta-campo">Añadir festivo local</p>
@@ -804,11 +805,10 @@ export function iniciar(raiz, almacen) {
         <table style="margin-top:.75rem">${tramos}
           <tr><td class="total">bruto</td><td class="cifra total">${eur(r.bruto)}</td></tr></table>
         ${(() => {
-          const sas = calcularGuardia({ ...g, fecha }, estado.festivos, { ...configConPrecios(estado), horarioSAS: true });
-          const d = redondear(sas.bruto - r.bruto);
-          return d === 0 ? "" : `<p class="aviso">Aquí se calculan las ${g.horas}h que haces. Ojo: el SAS
-            suele liquidar estas guardias de 08:00 a 08:00, y con eso pagaría ${eur(Math.abs(d))}
-            ${d > 0 ? "más" : "menos"}${d < 0 ? ": compáralo con la nómina y reclama la diferencia" : ""}.</p>`;
+          const liquidada = horarioLiquidado(g);
+          return liquidada.inicio === g.inicio && liquidada.horas === g.horas ? "" : `<p class="aviso">Haces
+            ${g.horas}h desde las ${esc(g.inicio)}, pero el SAS liquida de 08:00 a 08:00: se calcula como
+            ${liquidada.horas}h desde las ${liquidada.inicio}, que es lo que paga la nómina.</p>`;
         })()}
         <div class="acciones-modal">
           <button class="peligro" id="m-borrar">Borrar</button>
@@ -1163,7 +1163,7 @@ export function iniciar(raiz, almacen) {
       const fecha = raiz.querySelector("#f-fecha").value;
       const nombre = raiz.querySelector("#f-nombre").value.trim();
       if (/^\d{4}-\d{2}-\d{2}$/.test(fecha) && nombre) {
-        estado.festivos[fecha] = { nombre, clase: "sdf" };
+        estado.festivos[fecha] = { nombre, clase: "especial" };
         if (!raiz.querySelector("#f-repetir").checked) estado.festivos[fecha].repetir = false;
         persistir(); pintar();
       }

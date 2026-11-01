@@ -1,5 +1,5 @@
 // src/estado.js
-import { festivosDerivados } from "./festivos.js";
+import { festivosDerivados, localesComoEspecial } from "./festivos.js";
 
 // Prefijo distinto del original ("cuadrante_v6"): esta copia vive en
 // fermad95.github.io/cuadrante-guardias/, que comparte origen (y por tanto
@@ -22,6 +22,8 @@ export function estadoInicial() {
       retencionBase: 0.089753,
       retencionGuardias: 0.032609,
       retribuciones: null,
+      // Ya se han pasado las fiestas locales a festivo especial (ver festivos.js).
+      localesEspeciales: true,
       tema: "espacial", // "sobrio" | "espacial"
     },
     guardias: {},
@@ -98,7 +100,7 @@ export function sanearConfig(config) {
   if (c.inicioResidencia != null && !(typeof c.inicioResidencia === "string" && ES_FECHA.test(c.inicioResidencia))) {
     c.inicioResidencia = null;
   }
-  for (const k of ["cortarAMedianoche", "especialCortaAMedianoche"]) {
+  for (const k of ["cortarAMedianoche", "especialCortaAMedianoche", "localesEspeciales"]) {
     if (typeof c[k] !== "boolean") c[k] = inicial[k];
   }
   for (const k of ["retencionBase", "retencionGuardias"]) {
@@ -154,11 +156,12 @@ export function importarEstado(texto) {
   const config = sanearConfig(base.config);
   delete config.tema;
 
-  const festivos = {};
+  let festivos = {};
   for (const [fecha, f] of Object.entries(base.festivos || {})) {
     if (festivoValido(fecha, f)) festivos[fecha] = f;
     else descartadas += 1;
   }
+  if (dato.config.localesEspeciales !== true) festivos = localesComoEspecial(festivos);
 
   return {
     ok: true,
@@ -222,12 +225,14 @@ export function mismaData(a, b) {
 export function normalizar(dato) {
   const inicial = estadoInicial();
   const mapa = (x) => (x && typeof x === "object" && !Array.isArray(x) ? x : {});
+  const festivos = Object.fromEntries(Object.entries(mapa(dato.festivos)).filter(([f, x]) => festivoValido(f, x)));
+  const yaEspeciales = dato.config && dato.config.localesEspeciales === true;
   return {
     ...inicial,
     ...dato,
     config: sanearConfig(dato.config),
     guardias: Object.fromEntries(Object.entries(mapa(dato.guardias)).filter(([f, g]) => guardiaValida(f, g))),
-    festivos: Object.fromEntries(Object.entries(mapa(dato.festivos)).filter(([f, x]) => festivoValido(f, x))),
+    festivos: yaEspeciales ? festivos : localesComoEspecial(festivos),
     nominas: (Array.isArray(dato.nominas) ? dato.nominas : []).filter(nominaValida),
     actualizadoEn: Number(dato.actualizadoEn) || 0,
   };

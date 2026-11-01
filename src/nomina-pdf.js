@@ -130,6 +130,9 @@ function clasificarDevengo(nombre) {
   }
   if (/^JORN\.?\s*COMPLEMENTARIA$/.test(n)) return { tipo: "guardia", dia: "laborable" };
   if (/^JORN\.?\s*COMPLT\.?\s*SB-?DM-?FE$/.test(n)) return { tipo: "guardia", dia: "sdf" };
+  // Festivo especial (tarifa doble): "JOR.COMPL.F.ESPECIAL", visto en la
+  // complementaria de octubre de 2026 por una fiesta local.
+  if (/^JORN?\.?\s*COMPL\.?\s*F\.?\s*ESPECIAL$/.test(n)) return { tipo: "guardia", dia: "especial" };
   if (/^SUELDO$/.test(n)) return { tipo: "sueldo" };
   // Paga extraordinaria de junio o diciembre ("PAGA EXTRA", "P.EXTRA JUNIO",
   // "PAGA EXTRAORDINARIA"...): es parte de la nomina base, no un concepto raro.

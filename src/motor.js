@@ -72,9 +72,10 @@ export function partirGuardia(guardia, festivos, opciones = {}) {
 // menos, y agosto 2026 (domingo 2, 09:00-08:00) 1h festiva mas. Con esta regla
 // las dos cuadran a la hora: 60+32 y 59+16.
 //
-// La app calcula siempre con el horario real (lo que se debe cobrar); este
-// horario solo se usa para explicar por que la nomina paga distinto. Por eso
-// `horarioSAS` es una opcion interna de calculo, no un ajuste guardado.
+// La app liquida como el SAS para que cuadre siempre con la nomina (decision
+// del usuario, 01/11/2026): configConPrecios (nomina.js) lo activa en todos
+// los calculos de la app. Aqui sigue siendo una opcion para poder calcular
+// tambien el horario real (`horarioSAS: false`).
 const NUEVE = 9 * 60;
 const OCHO = 8 * 60;
 

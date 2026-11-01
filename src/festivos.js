@@ -93,6 +93,20 @@ export function clasificarDia(fechaISO, excepciones = {}) {
   return dia === 0 || dia === 6 ? "sdf" : "laborable";
 }
 
+// Las fiestas locales se pagan a tarifa doble (festivo especial): lo
+// demuestra la complementaria de octubre de 2026, que liquido una fiesta
+// local de septiembre como JOR.COMPL.F.ESPECIAL a 28,14 EUR/h. Las altas
+// locales guardadas antes como S-D-F pasan a especial una sola vez; despues,
+// si alguien marca una local como S-D-F a proposito, se respeta.
+export function localesComoEspecial(excepciones = {}) {
+  const fuera = {};
+  for (const [fecha, exc] of Object.entries(excepciones)) {
+    const local = exc && exc.nombre && !derivadosDe(Number(fecha.slice(0, 4)))[fecha];
+    fuera[fecha] = local && exc.clase === "sdf" ? { ...exc, clase: "especial" } : exc;
+  }
+  return fuera;
+}
+
 export function calendarioDe(anio, excepciones = {}) {
   // Se copia porque derivadosDe devuelve siempre la misma referencia cacheada:
   // sin la copia, una reclasificacion contaminaria las llamadas siguientes.
